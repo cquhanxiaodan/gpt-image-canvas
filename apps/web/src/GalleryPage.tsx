@@ -78,7 +78,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
       setError("");
 
       try {
-        const response = await fetch("/api/gallery", {
+        const response = await fetch("api/gallery", {
           signal: controller.signal
         });
         if (!response.ok) {

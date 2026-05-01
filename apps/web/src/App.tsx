@@ -1415,7 +1415,7 @@ export function App() {
       setSaveError("");
 
       try {
-        const response = await fetch("/api/project", {
+        const response = await fetch("api/project", {
           signal: controller.signal
         });
 
@@ -1456,7 +1456,7 @@ export function App() {
 
     async function loadStorageConfig(): Promise<void> {
       try {
-        const response = await fetch("/api/storage/config", {
+        const response = await fetch("api/storage/config", {
           signal: controller.signal
         });
         if (!response.ok) {
@@ -1610,7 +1610,7 @@ export function App() {
     setStorageMessage("");
 
     try {
-      const response = await fetch("/api/storage/config/test", {
+      const response = await fetch("api/storage/config/test", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -1647,7 +1647,7 @@ export function App() {
     setStorageMessage("");
 
     try {
-      const response = await fetch("/api/storage/config", {
+      const response = await fetch("api/storage/config", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json"
@@ -1762,7 +1762,7 @@ export function App() {
       setSaveError("");
 
       try {
-        const response = await fetch("/api/project", {
+        const response = await fetch("api/project", {
           method: "PUT",
           headers: {
             "Content-Type": "application/json"
