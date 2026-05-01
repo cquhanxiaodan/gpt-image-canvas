@@ -1928,7 +1928,7 @@ export function App() {
         }
       }
 
-      const response = await fetch(requestMode === "reference" ? "/api/images/edit" : "/api/images/generate", {
+      const response = await fetch(requestMode === "reference" ? "api/images/edit" : "api/images/generate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
