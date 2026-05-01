@@ -1975,6 +1975,26 @@ export function App() {
     editor.on("change", updateReferenceSelection);
     commitReferenceSelection();
 
+    async function restoreAssetSources(): Promise<void> {
+      const assets = editor.getAssets();
+      for (const asset of assets) {
+        if (asset.type !== "image") {
+          continue;
+        }
+        const src = asset.props.src;
+        const localAssetId = asset.meta && typeof asset.meta.localAssetId === "string" ? asset.meta.localAssetId : undefined;
+        if ((!src || src.length === 0) && localAssetId) {
+          const localAsset = await getLocalAsset(localAssetId);
+          if (localAsset) {
+            const dataUrl = await blobToDataUrl(localAsset.blob);
+            editor.updateAssets([{ id: asset.id, type: "image", props: { src: dataUrl } }]);
+          }
+        }
+      }
+    }
+
+    void restoreAssetSources();
+
     return () => {
       window.clearTimeout(saveTimerRef.current);
       if (referenceSelectionFrame !== undefined) {
