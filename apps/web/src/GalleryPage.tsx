@@ -185,7 +185,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   }
 
   function downloadItem(item: GalleryImageItem): void {
-    window.open(`/api/assets/${encodeURIComponent(item.asset.id)}/download`, "_blank", "noopener,noreferrer");
+    window.open(new URL(`api/assets/${encodeURIComponent(item.asset.id)}/download`, window.location.href).href, "_blank", "noopener,noreferrer");
     showStatus("已打开原图下载。");
   }
 
@@ -199,7 +199,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
     setError("");
 
     try {
-      const response = await fetch(`/api/gallery/${encodeURIComponent(item.outputId)}`, {
+      const response = await fetch(`api/gallery/${encodeURIComponent(item.outputId)}`, {
         method: "DELETE"
       });
       if (!response.ok) {
@@ -707,7 +707,7 @@ function DeleteGalleryDialog({
 }
 
 function assetPreviewUrl(assetId: string, width: number): string {
-  return `/api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`;
+  return new URL(`api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`, window.location.href).href;
 }
 
 function modeLabel(mode: GalleryImageItem["mode"]): string {

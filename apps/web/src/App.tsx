@@ -1946,6 +1946,14 @@ export function App() {
         throw new Error("生成服务返回了无法识别的结果。");
       }
 
+      // Convert relative asset URLs to absolute URLs for tldraw compatibility
+      const currentBaseUrl = window.location.href;
+      body.record.outputs.forEach((output: { asset?: { url?: string } }) => {
+        if (output.asset?.url && !output.asset.url.startsWith('http')) {
+          output.asset.url = new URL(output.asset.url, currentBaseUrl).href;
+        }
+      });
+
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
       }
