@@ -25,6 +25,8 @@ import {
   type StylePresetId
 } from "@gpt-image-canvas/shared";
 
+const BASE_URL = import.meta.env.BASE_URL;
+
 interface GalleryPageProps {
   onDeleted: (outputId: string) => void;
   onReuse: (item: GalleryImageItem) => void;
@@ -78,7 +80,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
       setError("");
 
       try {
-        const response = await fetch("api/gallery", {
+        const response = await fetch(`${BASE_URL}api/gallery`, {
           signal: controller.signal
         });
         if (!response.ok) {
@@ -185,7 +187,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   }
 
   function downloadItem(item: GalleryImageItem): void {
-    window.open(new URL(`api/assets/${encodeURIComponent(item.asset.id)}/download`, window.location.href).href, "_blank", "noopener,noreferrer");
+    window.open(new URL(`${BASE_URL}api/assets/${encodeURIComponent(item.asset.id)}/download`, window.location.origin).href, "_blank", "noopener,noreferrer");
     showStatus("已打开原图下载。");
   }
 
@@ -199,7 +201,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
     setError("");
 
     try {
-      const response = await fetch(`api/gallery/${encodeURIComponent(item.outputId)}`, {
+      const response = await fetch(`${BASE_URL}api/gallery/${encodeURIComponent(item.outputId)}`, {
         method: "DELETE"
       });
       if (!response.ok) {
@@ -707,7 +709,7 @@ function DeleteGalleryDialog({
 }
 
 function assetPreviewUrl(assetId: string, width: number): string {
-  return new URL(`api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`, window.location.href).href;
+  return new URL(`${BASE_URL}api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`, window.location.origin).href;
 }
 
 function modeLabel(mode: GalleryImageItem["mode"]): string {

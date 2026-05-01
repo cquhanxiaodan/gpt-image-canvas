@@ -15,6 +15,13 @@ export default defineConfig({
     strictPort: true,
     allowedHosts: ['.monkeycode-ai.online'],
     proxy: {
+      "/canvas/api": {
+        target: "http://127.0.0.1:8787",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/canvas/, ""),
+        timeout: 600000,
+        proxyTimeout: 600000
+      },
       "/api": {
         target: "http://127.0.0.1:8787",
         changeOrigin: true,

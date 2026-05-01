@@ -310,12 +310,14 @@ function generationValidationMessage(promptValue: string, widthValue: number, he
   return promptValue.trim() ? sizeValidationMessage(widthValue, heightValue) : "请输入提示词。";
 }
 
+const BASE_URL = import.meta.env.BASE_URL;
+
 function routeFromLocation(): AppRoute {
-  return window.location.pathname === "/gallery" ? "gallery" : "canvas";
+  return window.location.pathname.endsWith("/gallery") ? "gallery" : "canvas";
 }
 
 function pathForRoute(route: AppRoute): string {
-  return route === "gallery" ? "/gallery" : "/";
+  return route === "gallery" ? `${BASE_URL}gallery` : BASE_URL;
 }
 
 function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
@@ -1025,7 +1027,7 @@ async function readReferenceImage(selection: Extract<ReferenceSelection, { statu
 }
 
 async function readStoredReferenceImage(assetId: string, signal: AbortSignal): Promise<ReferenceImageInput> {
-  const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}`, { signal });
+  const response = await fetch(`${BASE_URL}api/assets/${encodeURIComponent(assetId)}`, { signal });
   if (!response.ok) {
     throw new Error("无法读取历史参考图。请确认原始资源仍然存在。");
   }
@@ -1415,7 +1417,7 @@ export function App() {
       setSaveError("");
 
       try {
-        const response = await fetch("api/project", {
+        const response = await fetch(`${BASE_URL}api/project`, {
           signal: controller.signal
         });
 
@@ -1456,7 +1458,7 @@ export function App() {
 
     async function loadStorageConfig(): Promise<void> {
       try {
-        const response = await fetch("api/storage/config", {
+        const response = await fetch(`${BASE_URL}api/storage/config`, {
           signal: controller.signal
         });
         if (!response.ok) {
@@ -1610,7 +1612,7 @@ export function App() {
     setStorageMessage("");
 
     try {
-      const response = await fetch("api/storage/config/test", {
+      const response = await fetch(`${BASE_URL}api/storage/config/test`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -1647,7 +1649,7 @@ export function App() {
     setStorageMessage("");
 
     try {
-      const response = await fetch("api/storage/config", {
+      const response = await fetch(`${BASE_URL}api/storage/config`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json"
@@ -1762,7 +1764,7 @@ export function App() {
       setSaveError("");
 
       try {
-        const response = await fetch("api/project", {
+        const response = await fetch(`${BASE_URL}api/project`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json"
@@ -1928,7 +1930,7 @@ export function App() {
         }
       }
 
-      const response = await fetch(requestMode === "reference" ? "api/images/edit" : "api/images/generate", {
+      const response = await fetch(requestMode === "reference" ? `${BASE_URL}api/images/edit` : `${BASE_URL}api/images/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
