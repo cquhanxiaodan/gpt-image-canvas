@@ -264,7 +264,7 @@ async function saveProviderImage(image: ProviderImage, input: ImageProviderInput
   return {
     asset: {
       id: assetId,
-      url: `/api/assets/${assetId}`,
+      url: `api/assets/${assetId}`,
       fileName,
       mimeType,
       width: input.size.width,
