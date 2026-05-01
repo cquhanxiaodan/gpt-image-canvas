@@ -1342,6 +1342,7 @@ export function App() {
   const [generationMessage, setGenerationMessage] = useState("");
   const [generationWarning, setGenerationWarning] = useState("");
   const [generationHistory, setGenerationHistory] = useState<GenerationRecord[]>([]);
+  const [pendingReuseAsset, setPendingReuseAsset] = useState<GeneratedAsset | null>(null);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
@@ -1524,6 +1525,37 @@ export function App() {
 
     void loadProject();
   }, []);
+
+  useEffect(() => {
+    if (pendingReuseAsset && editorRef.current) {
+      const editor = editorRef.current;
+      const assetData = pendingReuseAsset;
+      const tldrawAssetId = createTldrawAssetId(assetData.id);
+
+      if (!editor.getAsset(tldrawAssetId)) {
+        editor.createAssets([createImageAsset(assetData)]);
+      }
+
+      const viewport = editor.getViewportPageBounds();
+      const x = viewport.center.x - assetData.width / 2;
+      const y = viewport.center.y - assetData.height / 2;
+
+      editor.createShapes([{
+        id: createTldrawShapeId(),
+        type: 'image',
+        x,
+        y,
+        props: {
+          assetId: tldrawAssetId,
+          w: assetData.width,
+          h: assetData.height,
+          url: ''
+        }
+      }]);
+
+      setPendingReuseAsset(null);
+    }
+  }, [pendingReuseAsset]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(MOBILE_DRAWER_MEDIA_QUERY);
@@ -2431,6 +2463,11 @@ export function App() {
     setGenerationError("");
     setGenerationWarning("");
     setGenerationMessage("已从 Gallery 填入生成参数。");
+    
+    if (item.asset) {
+      setPendingReuseAsset(item.asset);
+    }
+
     navigateToRoute("canvas");
     if (isMobileDrawer) {
       setIsAiPanelOpen(true);
