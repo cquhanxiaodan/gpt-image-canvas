@@ -32,7 +32,16 @@ import {
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
-import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
+import {
+  generateImagesLocal,
+  editImagesLocal,
+  getStoredAssetFile,
+  readStoredAsset,
+  runReferenceImageGeneration,
+  runTextToImageGeneration,
+  saveAssetToConfiguredCloud,
+  buildCosPublicUrl
+} from "./image-generation.js";
 import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
 import { runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
@@ -46,6 +55,7 @@ interface ProjectPayload {
 }
 
 export const app = new Hono();
+const api = new Hono();
 
 app.onError((error, c) => {
   console.error(error);
@@ -60,13 +70,13 @@ app.onError((error, c) => {
   );
 });
 
-app.get("/api/health", (c) =>
+api.get("health", (c) =>
   c.json({
     status: "ok"
   })
 );
 
-app.get("/api/config", (c) => {
+api.get("config", (c) => {
   const configuredModel = getConfiguredImageModel();
   const config: AppConfig = {
     model: configuredModel,
@@ -81,11 +91,11 @@ app.get("/api/config", (c) => {
   return c.json(config);
 });
 
-app.get("/api/project", (c) => c.json(getProjectState()));
+api.get("project", (c) => c.json(getProjectState()));
 
-app.get("/api/gallery", (c) => c.json(getGalleryImages()));
+api.get("gallery", (c) => c.json(getGalleryImages()));
 
-app.delete("/api/gallery/:outputId", (c) => {
+api.delete("gallery/:outputId", (c) => {
   const deleted = deleteGalleryOutput(c.req.param("outputId"));
   if (!deleted) {
     return c.json(errorResponse("not_found", "找不到请求的 Gallery 图片记录。"), 404);
@@ -96,9 +106,9 @@ app.delete("/api/gallery/:outputId", (c) => {
   });
 });
 
-app.get("/api/storage/config", (c) => c.json(getStorageConfig()));
+api.get("storage/config", (c) => c.json(getStorageConfig()));
 
-app.put("/api/storage/config", async (c) => {
+api.put("storage/config", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -116,7 +126,7 @@ app.put("/api/storage/config", async (c) => {
   }
 });
 
-app.post("/api/storage/config/test", async (c) => {
+api.post("storage/config/test", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -130,7 +140,7 @@ app.post("/api/storage/config/test", async (c) => {
   return c.json(await testStorageConfig(parsed.value));
 });
 
-app.get("/api/assets/:id/preview", async (c) => {
+api.get("assets/:id/preview", async (c) => {
   const parsedWidth = parsePreviewWidth(c.req.query("width"));
   if (!parsedWidth.ok) {
     return c.json(errorResponse(parsedWidth.code, parsedWidth.message), 400);
@@ -151,7 +161,7 @@ app.get("/api/assets/:id/preview", async (c) => {
   });
 });
 
-app.get("/api/assets/:id/download", async (c) => {
+api.get("assets/:id/download", async (c) => {
   const asset = await readStoredAsset(c.req.param("id"));
   if (!asset) {
     return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
@@ -167,7 +177,7 @@ app.get("/api/assets/:id/download", async (c) => {
   });
 });
 
-app.get("/api/assets/:id", async (c) => {
+api.get("assets/:id", async (c) => {
   const asset = await readStoredAsset(c.req.param("id"));
   if (!asset) {
     return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
@@ -183,7 +193,7 @@ app.get("/api/assets/:id", async (c) => {
   });
 });
 
-app.put("/api/project", async (c) => {
+api.put("project", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     logProjectSaveRejected(payload.error, c.req.raw);
@@ -199,7 +209,7 @@ app.put("/api/project", async (c) => {
   return c.json(saveProjectSnapshot(parsed.value));
 });
 
-app.post("/api/images/generate", async (c) => {
+api.post("images/generate", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -228,7 +238,7 @@ app.post("/api/images/generate", async (c) => {
   }
 });
 
-app.post("/api/images/edit", async (c) => {
+api.post("images/edit", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -257,10 +267,124 @@ app.post("/api/images/edit", async (c) => {
   }
 });
 
+api.post("images/generate-local", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseGeneratePayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  const apiConfig = parseApiConfig(payload.value);
+  const providerConfig = getOpenAIImageProviderConfig(apiConfig);
+  if (!providerConfig.ok) {
+    return providerErrorJson(c, providerConfig.error);
+  }
+
+  try {
+    const provider = createOpenAIImageProvider(providerConfig.config);
+    return c.json(await generateImagesLocal(parsed.value, provider, c.req.raw.signal));
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      return providerErrorJson(c, error);
+    }
+
+    throw error;
+  }
+});
+
+api.post("images/edit-local", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseEditPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  const apiConfig = parseApiConfig(payload.value);
+  const providerConfig = getOpenAIImageProviderConfig(apiConfig);
+  if (!providerConfig.ok) {
+    return providerErrorJson(c, providerConfig.error);
+  }
+
+  try {
+    const provider = createOpenAIImageProvider(providerConfig.config);
+    return c.json(await editImagesLocal(parsed.value, provider, c.req.raw.signal));
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      return providerErrorJson(c, error);
+    }
+
+    throw error;
+  }
+});
+
+api.post("assets/upload-local", async (c) => {
+  try {
+    const body = await c.req.json();
+    const b64Json: string | undefined = body.b64Json;
+    const fileName: string | undefined = body.fileName;
+    const mimeType: string | undefined = body.mimeType;
+    const createdAt: string | undefined = body.createdAt;
+
+    if (!b64Json || !fileName || !mimeType) {
+      return c.json({ error: "b64Json, fileName, and mimeType are required" }, 400);
+    }
+
+    const bytes = Buffer.from(b64Json, "base64");
+    const cloudStorage = await saveAssetToConfiguredCloud({
+      fileName,
+      bytes,
+      mimeType,
+      createdAt: createdAt ?? new Date().toISOString()
+    });
+
+    if (!cloudStorage) {
+      return c.json({ error: "COS storage is not configured" }, 503);
+    }
+
+    if (cloudStorage.status === "failed") {
+      return c.json({
+        error: cloudStorage.error ?? "Upload failed",
+        cloud: {
+          provider: cloudStorage.provider,
+          status: cloudStorage.status,
+          lastError: cloudStorage.error,
+          uploadedAt: cloudStorage.uploadedAt
+        }
+      }, 500);
+    }
+
+    const publicUrl = buildCosPublicUrl(cloudStorage.bucket, cloudStorage.region, cloudStorage.objectKey);
+
+    return c.json({
+      url: publicUrl,
+      cloud: {
+        provider: cloudStorage.provider,
+        status: cloudStorage.status,
+        uploadedAt: cloudStorage.uploadedAt
+      }
+    });
+  } catch (error) {
+    console.error("Upload to COS failed:", error);
+    return c.json({ error: "Internal server error" }, 500);
+  }
+});
+
 const webDistRoot = relative(process.cwd(), runtimePaths.webDistDir) || ".";
 
-app.get("/api/*", (c) => c.json(errorResponse("not_found", "Not found."), 404));
+api.get("*", (c) => c.json(errorResponse("not_found", "Not found."), 404));
 
+app.route("/api", api);
+app.route("/canvas/api", api);
+
+app.get("/canvas/*", serveStatic({ root: webDistRoot, rewriteRequestPath: (path) => path.replace(/^\/canvas/, "") }));
 app.get("*", serveStatic({ root: webDistRoot }));
 app.get(
   "*",

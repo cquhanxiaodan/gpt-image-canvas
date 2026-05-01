@@ -24,7 +24,7 @@ import {
   type GalleryResponse,
   type StylePresetId
 } from "@gpt-image-canvas/shared";
-import { getLocalAsset, listLocalAssets } from "./local-storage";
+import { getLocalAsset, deleteLocalAsset, listLocalAssets } from "./local-storage";
 
 const GENERATION_HISTORY_KEY = "gpt-image-canvas-history";
 
@@ -47,6 +47,34 @@ function normalizeAssetUrl(url: string): string {
   if (url.startsWith('data:')) return url;
   if (url.startsWith('/api/')) return `${BASE_URL}${url.slice(1)}`;
   return `${BASE_URL}${url}`;
+}
+
+function getAssetImageSrc(asset: GalleryImageItem["asset"], width: number): string {
+  if (asset.url.startsWith('data:')) return asset.url;
+  if (asset.url.startsWith('http')) return asset.url;
+  return assetPreviewUrl(asset.id, width);
+}
+
+function downloadAssetImage(item: GalleryImageItem): void {
+  if (item.asset.url.startsWith('data:')) {
+    const link = document.createElement('a');
+    link.href = item.asset.url;
+    link.download = item.asset.fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    return;
+  }
+  if (item.asset.url.startsWith('http')) {
+    const link = document.createElement('a');
+    link.href = item.asset.url;
+    link.download = item.asset.fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    return;
+  }
+  window.open(new URL(`${BASE_URL}api/assets/${encodeURIComponent(item.asset.id)}/download`, window.location.origin).href, "_blank", "noopener,noreferrer");
 }
 
 interface GalleryPageProps {
@@ -243,8 +271,8 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   }
 
   function downloadItem(item: GalleryImageItem): void {
-    window.open(new URL(`${BASE_URL}api/assets/${encodeURIComponent(item.asset.id)}/download`, window.location.origin).href, "_blank", "noopener,noreferrer");
-    showStatus("已打开原图下载。");
+    downloadAssetImage(item);
+    showStatus("已开始下载原图。");
   }
 
   function requestDelete(item: GalleryImageItem): void {
@@ -270,18 +298,6 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
       if (item.asset?.id) {
         await deleteLocalAsset(item.asset.id);
       }
-
-      setItems((current) => current.filter((galleryItem) => galleryItem.outputId !== item.outputId));
-      setSelectedItem((current) => (current?.outputId === item.outputId ? null : current));
-      setPendingDeleteItem(null);
-      onDeleted(item.outputId);
-      showStatus("已从 Gallery 和生成历史移除。");
-    } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "删除失败，请重试。");
-    } finally {
-      setDeletingOutputId(null);
-    }
-  }
 
       setItems((current) => current.filter((galleryItem) => galleryItem.outputId !== item.outputId));
       setSelectedItem((current) => (current?.outputId === item.outputId ? null : current));
@@ -433,7 +449,7 @@ function FeaturedGalleryItem({
           alt={item.prompt}
           className="gallery-feature__image"
           height={item.asset.height}
-          src={assetPreviewUrl(item.asset.id, 1024)}
+          src={getAssetImageSrc(item.asset, 1024)}
           width={item.asset.width}
         />
         <span className="gallery-feature__badge">Latest</span>
@@ -506,7 +522,7 @@ function GalleryCard({
           className="gallery-card__image"
           height={item.asset.height}
           loading="lazy"
-          src={assetPreviewUrl(item.asset.id, 512)}
+          src={getAssetImageSrc(item.asset, 512)}
           width={item.asset.width}
         />
         <span className="gallery-card__zoom">

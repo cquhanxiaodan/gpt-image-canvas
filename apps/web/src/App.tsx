@@ -60,7 +60,10 @@ import {
   type ProjectState,
   type ReferenceImageInput,
   type SizePreset,
-  type StylePresetId
+  type StylePresetId,
+  type StorageConfigResponse,
+  type SaveStorageConfigRequest,
+  type StorageTestResult
 } from "@gpt-image-canvas/shared";
 import {
   blobToDataUrl,
@@ -72,7 +75,6 @@ import {
   saveLocalAsset,
   type LocalAssetRecord
 } from "./local-storage";
-import { generateImage, editImage } from "./openai-client";
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
 const HISTORY_COLLAPSED_LIMIT = 3;
@@ -628,7 +630,7 @@ function createImageShape(
       assetId,
       w: placement.width,
       h: placement.height,
-      url: asset.url,
+      url: "",
       playing: true,
       crop: null,
       flipX: false,
@@ -932,6 +934,14 @@ function resolveCanvasAssetUrl(asset: TLAsset, context: TLAssetContext): string 
     return sourceUrl || null;
   }
 
+  if (sourceUrl.startsWith("http")) {
+    return sourceUrl;
+  }
+
+  if (sourceUrl.startsWith("data:")) {
+    return sourceUrl;
+  }
+
   const localAssetId = getLocalAssetId(asset, sourceUrl);
   if (!localAssetId) {
     return sourceUrl;
@@ -993,7 +1003,7 @@ function isSupportedReferenceImageType(mimeType: string): boolean {
   return SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType.toLowerCase());
 }
 
-async function blobToDataUrl(blob: Blob): Promise<string> {
+async function referenceImageToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("无法读取参考图片数据。"));
@@ -1034,7 +1044,7 @@ async function readReferenceImage(selection: Extract<ReferenceSelection, { statu
   }
 
   return {
-    dataUrl: await blobToDataUrl(blob),
+    dataUrl: await referenceImageToDataUrl(blob),
     fileName: fileNameWithImageExtension(selection.name, blob.type)
   };
 }
@@ -1054,7 +1064,7 @@ async function readStoredReferenceImage(assetId: string, signal: AbortSignal): P
   }
 
   return {
-    dataUrl: await blobToDataUrl(blob),
+    dataUrl: await referenceImageToDataUrl(blob),
     fileName: fileNameWithImageExtension(assetId, blob.type)
   };
 }
@@ -1566,21 +1576,45 @@ export function App() {
         throw new Error("无效的备份文件格式。");
       }
 
+      // Merge project snapshot (import as additional, don't overwrite current)
       if (importData.project) {
-        localStorage.setItem(PROJECT_SNAPSHOT_KEY, JSON.stringify(importData.project));
+        const currentSnapshot = localStorage.getItem(PROJECT_SNAPSHOT_KEY);
+        if (!currentSnapshot) {
+          localStorage.setItem(PROJECT_SNAPSHOT_KEY, JSON.stringify(importData.project));
+        }
       }
 
-      if (importData.history) {
-        localStorage.setItem(GENERATION_HISTORY_KEY, JSON.stringify(importData.history));
+      // Merge generation history (import as additional, don't overwrite)
+      if (Array.isArray(importData.history)) {
+        const savedHistory = localStorage.getItem(GENERATION_HISTORY_KEY);
+        const existingHistory = savedHistory ? JSON.parse(savedHistory) : [];
+        const existingIds = new Set(existingHistory.map((r: { id: string }) => r.id));
+        const merged = [...existingHistory, ...importData.history.filter((r: { id: string }) => !existingIds.has(r.id))];
+        localStorage.setItem(GENERATION_HISTORY_KEY, JSON.stringify(merged));
       }
 
+      // Merge API providers (import as additional, don't overwrite)
       if (importData.apiProviders) {
-        localStorage.setItem("api-providers", JSON.stringify(importData.apiProviders));
+        const savedProviders = localStorage.getItem("api-providers");
+        const existingProviders = savedProviders ? JSON.parse(savedProviders) : [];
+        if (!Array.isArray(existingProviders)) {
+          localStorage.setItem("api-providers", JSON.stringify(importData.apiProviders));
+        } else {
+          const existingNames = new Set(existingProviders.map((p: { name: string }) => p.name));
+          const merged = [...existingProviders, ...importData.apiProviders.filter((p: { name: string }) => !existingNames.has(p.name))];
+          localStorage.setItem("api-providers", JSON.stringify(merged));
+        }
       }
 
+      // Import assets as additional (don't overwrite existing)
       if (Array.isArray(importData.assets)) {
-        await clearAllLocalAssets();
+        const existingAssets = await listLocalAssets();
+        const existingAssetIds = new Set(existingAssets.map((a) => a.id));
+        let importedCount = 0;
         for (const asset of importData.assets) {
+          if (existingAssetIds.has(asset.id)) {
+            continue;
+          }
           const blob = dataUrlToBlob(asset.data);
           await saveLocalAsset({
             id: asset.id,
@@ -1591,10 +1625,12 @@ export function App() {
             height: asset.height,
             createdAt: asset.createdAt
           });
+          importedCount++;
         }
+        setGenerationMessage(`已导入 ${importedCount} 张图片（跳过 ${importData.assets.length - importedCount} 张已存在的图片）。`);
+      } else {
+        setGenerationMessage("已成功导入数据，页面将刷新。");
       }
-
-      setGenerationMessage("已成功导入数据，页面将刷新。");
       window.location.reload();
     } catch (error) {
       setGenerationError(error instanceof Error ? error.message : "导入失败，请检查文件格式。");
@@ -1992,63 +2028,111 @@ export function App() {
         throw new Error("请先配置 API 供应商。");
       }
 
-      const openAIRequest = {
-        model: "gpt-image-1",
-        prompt: composePrompt(input.prompt.trim(), input.presetId),
-        n: input.count,
-        size: `${input.size.width}x${input.size.height}`,
-        quality: input.quality === "auto" ? undefined : input.quality,
-        response_format: "b64_json" as const,
-        output_format: input.outputFormat
+      const requestBody: Record<string, unknown> = {
+        prompt: input.prompt.trim(),
+        presetId: input.presetId,
+        size: input.size,
+        quality: input.quality,
+        outputFormat: input.outputFormat,
+        count: input.count,
+        apiKey: selectedProvider.apiKey,
+        baseURL: selectedProvider.baseURL
       };
 
-      let result: OpenAIImageGenerationResponse;
+      let response: Response;
 
       if (requestMode === "reference" && referenceForRequest) {
-        result = await editImage(selectedProvider.apiKey, selectedProvider.baseURL, {
-          ...openAIRequest,
-          image: referenceForRequest.referenceImage.dataUrl
+        requestBody.referenceImage = referenceForRequest.referenceImage;
+        response = await fetch(`${BASE_URL}api/images/edit-local`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal
         });
       } else {
-        result = await generateImage(selectedProvider.apiKey, selectedProvider.baseURL, openAIRequest);
+        response = await fetch(`${BASE_URL}api/images/generate-local`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal
+        });
+      }
+
+      if (!response.ok) {
+        const errorMessage = await readErrorMessage(response);
+        throw new Error(errorMessage);
+      }
+
+      const localResult = (await response.json()) as {
+        recordId: string;
+        outputs: Array<{
+          outputId: string;
+          status: "succeeded" | "failed";
+          b64Json?: string;
+          error?: string;
+        }>;
+      };
+
+      if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
+        return;
       }
 
       const generationId = `local-gen-${Date.now()}-${requestId}`;
-      const outputs = await Promise.all(result.data.map(async (imageData, index) => {
+      const createdAt = new Date().toISOString();
+      const outputs = await Promise.all(localResult.outputs.map(async (output, index) => {
         const outputId = `output-${generationId}-${index}`;
-        if (imageData.b64_json) {
+        if (output.status === "succeeded" && output.b64Json) {
           const assetId = `asset-${generationId}-${index}`;
           const mimeType = input.outputFormat === "jpeg" ? "image/jpeg" : input.outputFormat === "webp" ? "image/webp" : "image/png";
-          const blob = dataUrlToBlob(`data:${mimeType};base64,${imageData.b64_json}`);
-          
+          const blob = dataUrlToBlob(`data:${mimeType};base64,${output.b64Json}`);
+          const assetFileName = `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`;
+
           await saveLocalAsset({
             id: assetId,
             blob,
             mimeType,
-            fileName: `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`,
+            fileName: assetFileName,
             width: input.size.width,
             height: input.size.height,
-            createdAt: new Date().toISOString()
+            createdAt
           });
 
-          const dataUrl = await blobToDataUrl(blob);
+          let assetUrl = await blobToDataUrl(blob);
+          let assetCloud: GeneratedAsset["cloud"] = undefined;
+
+          try {
+            const uploadResp = await fetch(`${BASE_URL}api/assets/upload-local`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ b64Json: output.b64Json, fileName: assetFileName, mimeType, createdAt })
+            });
+            if (uploadResp.ok) {
+              const uploadResult = await uploadResp.json();
+              assetUrl = uploadResult.url;
+              assetCloud = uploadResult.cloud;
+            }
+          } catch {
+            // COS upload failed, fall back to data URL
+          }
+
           return {
             id: outputId,
             status: "succeeded" as const,
             asset: {
               id: assetId,
-              url: dataUrl,
-              fileName: `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`,
+              url: assetUrl,
+              fileName: assetFileName,
               mimeType,
               width: input.size.width,
-              height: input.size.height
+              height: input.size.height,
+              cloud: assetCloud
             }
           };
         }
         return {
           id: outputId,
           status: "failed" as const,
-          error: "图像数据为空"
+          error: output.error || "图像数据为空"
         };
       }));
 
@@ -2056,7 +2140,7 @@ export function App() {
       const failureCount = outputs.length - successCount;
       const status = successCount > 0 && failureCount > 0 ? "partial" : successCount > 0 ? "succeeded" : "failed";
 
-      const record = {
+      const record: GenerationRecord = {
         id: generationId,
         mode: requestMode === "reference" ? "edit" : "generate",
         prompt: input.prompt.trim(),
@@ -2073,29 +2157,20 @@ export function App() {
         outputs
       };
 
-      if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
-        return;
-      }
-
       setGenerationHistory((history) =>
         [record, ...history.filter((r) => r.id !== temporaryRecord.id && r.id !== record.id)].slice(0, 20)
       );
       localStorage.setItem(GENERATION_HISTORY_KEY, JSON.stringify(
         [record, ...generationHistory.filter((r) => r.id !== temporaryRecord.id && r.id !== record.id)].slice(0, 20)
       ));
-      
+
       const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, record);
-      const cloudFailedCount = 0;
       if (insertedCount > 0) {
-        if (cloudFailedCount > 0) {
-          setGenerationWarning(`已向画布插入 ${insertedCount} 张图像。`);
-        } else {
-          setGenerationMessage(
-            failureCount > 0
-              ? `已向画布插入 ${insertedCount} 张图像，${failureCount} 张失败。`
-              : `已向画布插入 ${insertedCount} 张图像。`
-          );
-        }
+        setGenerationMessage(
+          failureCount > 0
+            ? `已向画布插入 ${insertedCount} 张图像，${failureCount} 张失败。`
+            : `已向画布插入 ${insertedCount} 张图像。`
+        );
         showGenerationCompleteNotification(record, insertedCount, failureCount);
       } else {
         setGenerationError(record.error || "没有可插入的成功图像。");

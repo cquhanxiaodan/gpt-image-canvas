@@ -96,6 +96,104 @@ export async function runTextToImageGeneration(input: ImageProviderInput, provid
   };
 }
 
+export interface LocalGenerationResponse {
+  recordId: string;
+  outputs: Array<{
+    outputId: string;
+    status: "succeeded" | "failed";
+    b64Json?: string;
+    error?: string;
+  }>;
+}
+
+async function generateLocalOutput(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<LocalGenerationResponse["outputs"][number]> {
+  const outputId = randomUUID();
+
+  try {
+    throwIfAborted(signal);
+    const result = await provider.generate({ ...input, count: 1 }, signal);
+    throwIfAborted(signal);
+
+    const providerImage = result.images[0];
+    if (!providerImage) {
+      throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
+    }
+
+    return {
+      outputId,
+      status: "succeeded",
+      b64Json: providerImage.b64Json
+    };
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw error;
+    }
+
+    return {
+      outputId,
+      status: "failed",
+      error: errorToMessage(error)
+    };
+  }
+}
+
+async function editLocalOutput(input: EditImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<LocalGenerationResponse["outputs"][number]> {
+  const outputId = randomUUID();
+
+  try {
+    throwIfAborted(signal);
+    const result = await provider.edit({ ...input, count: 1 }, signal);
+    throwIfAborted(signal);
+
+    const providerImage = result.images[0];
+    if (!providerImage) {
+      throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
+    }
+
+    return {
+      outputId,
+      status: "succeeded",
+      b64Json: providerImage.b64Json
+    };
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw error;
+    }
+
+    return {
+      outputId,
+      status: "failed",
+      error: errorToMessage(error)
+    };
+  }
+}
+
+export async function generateImagesLocal(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<LocalGenerationResponse> {
+  const outputs = await mapWithConcurrency(
+    Array.from({ length: input.count }, (_, index) => index),
+    BATCH_CONCURRENCY,
+    async () => generateLocalOutput(input, provider, signal)
+  );
+
+  return {
+    recordId: randomUUID(),
+    outputs
+  };
+}
+
+export async function editImagesLocal(input: EditImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<LocalGenerationResponse> {
+  const outputs = await mapWithConcurrency(
+    Array.from({ length: input.count }, (_, index) => index),
+    BATCH_CONCURRENCY,
+    async () => editLocalOutput(input, provider, signal)
+  );
+
+  return {
+    recordId: randomUUID(),
+    outputs
+  };
+}
+
 export async function runReferenceImageGeneration(
   input: EditImageProviderInput,
   provider: ImageProvider,
@@ -375,7 +473,7 @@ function toGenerationOutput(output: BatchOutputResult): GenerationOutput {
   };
 }
 
-async function saveAssetToConfiguredCloud(input: {
+export async function saveAssetToConfiguredCloud(input: {
   fileName: string;
   bytes: Buffer;
   mimeType: string;
@@ -416,6 +514,10 @@ async function saveAssetToConfiguredCloud(input: {
       error: storageErrorMessage(error)
     };
   }
+}
+
+export function buildCosPublicUrl(bucket: string, region: string, objectKey: string): string {
+  return `https://${bucket}.cos.${region}.myqcloud.com/${objectKey}`;
 }
 
 async function readCloudAsset(location: CosAssetLocation | undefined): Promise<Buffer | undefined> {
