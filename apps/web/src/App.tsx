@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Sparkles,
   Square,
+  Trash2,
   Upload,
   X,
   XCircle
@@ -386,6 +387,27 @@ function filterLoadingPlaceholdersFromSnapshot<TSnapshot>(snapshot: TSnapshot): 
   }
 
   return filterLoadingPlaceholdersFromStoreSnapshot(snapshot);
+}
+
+function stripHeavyDataFromSnapshot<TSnapshot>(snapshot: TSnapshot): TSnapshot {
+  if (!isRecord(snapshot) || !isRecord(snapshot.store)) {
+    return snapshot;
+  }
+
+  const nextStore = { ...snapshot.store };
+  let modified = false;
+
+  for (const [id, record] of Object.entries(nextStore)) {
+    if (isRecord(record) && record.typeName === "asset" && record.type === "image") {
+      const props = record.props as Record<string, unknown> | undefined;
+      if (props && typeof props.src === "string" && props.src.startsWith("data:")) {
+        nextStore[id] = { ...record, props: { ...props, src: "" } };
+        modified = true;
+      }
+    }
+  }
+
+  return modified ? ({ ...snapshot, store: nextStore } as TSnapshot) : snapshot;
 }
 
 function coerceStylePresetId(value: string): StylePresetId {
@@ -1194,13 +1216,15 @@ function TopNavigation({
   onNavigate,
   onPreloadGallery,
   onExport,
-  onImport
+  onImport,
+  onClear
 }: {
   route: AppRoute;
   onNavigate: (route: AppRoute) => void;
   onPreloadGallery: () => void;
   onExport: () => void;
   onImport: () => void;
+  onClear: () => void;
 }) {
   return (
     <header className="top-navigation">
@@ -1262,6 +1286,15 @@ function TopNavigation({
           >
             <Upload className="size-4" aria-hidden="true" />
             <span className="sr-only">导入数据</span>
+          </button>
+          <button
+            className="top-navigation__action-btn"
+            title="清空本地数据（画布、历史和图像）"
+            type="button"
+            onClick={onClear}
+          >
+            <Trash2 className="size-4" aria-hidden="true" />
+            <span className="sr-only">清空数据</span>
           </button>
         </div>
         <div className="local-storage-notice" title="所有数据（包括画布、生成历史和图像）都存储在浏览器本地。请定期导出备份。">
@@ -1650,6 +1683,21 @@ export function App() {
     input.click();
   }
 
+  async function clearAllLocalData(): Promise<void> {
+    try {
+      localStorage.removeItem(PROJECT_SNAPSHOT_KEY);
+      localStorage.removeItem(GENERATION_HISTORY_KEY);
+      localStorage.removeItem("api-providers");
+      localStorage.removeItem("api-selected-provider-id");
+      localStorage.removeItem("auth_token");
+      await clearAllLocalAssets();
+      setGenerationMessage("已清空所有本地数据，页面将刷新。");
+      setTimeout(() => window.location.reload(), 500);
+    } catch {
+      setGenerationError("清空数据失败，请重试。");
+    }
+  }
+
   function closeApiDialog(): void {
     setIsApiDialogOpen(false);
     setApiEditIndex(null);
@@ -1892,7 +1940,8 @@ export function App() {
 
       try {
         const snapshot = filterLoadingPlaceholdersFromSnapshot(editor.getSnapshot());
-        localStorage.setItem(PROJECT_SNAPSHOT_KEY, JSON.stringify(snapshot));
+        const cleaned = stripHeavyDataFromSnapshot(snapshot);
+        localStorage.setItem(PROJECT_SNAPSHOT_KEY, JSON.stringify(cleaned));
 
         if (saveRequestRef.current === requestId) {
           setSaveStatus("saved");
@@ -2439,6 +2488,7 @@ export function App() {
         onPreloadGallery={preloadGalleryPage}
         onExport={exportAllData}
         onImport={triggerImportFile}
+        onClear={clearAllLocalData}
       />
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section

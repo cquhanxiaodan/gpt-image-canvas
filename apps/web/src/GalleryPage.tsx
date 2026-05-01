@@ -24,7 +24,7 @@ import {
   type GalleryResponse,
   type StylePresetId
 } from "@gpt-image-canvas/shared";
-import { getLocalAsset, deleteLocalAsset, listLocalAssets } from "./local-storage";
+import { getLocalAsset, deleteLocalAsset, listLocalAssets, blobToDataUrl } from "./local-storage";
 
 const GENERATION_HISTORY_KEY = "gpt-image-canvas-history";
 
@@ -129,64 +129,102 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
 
       try {
         const savedHistory = localStorage.getItem(GENERATION_HISTORY_KEY);
-        if (!savedHistory) {
-          setItems([]);
-          setIsLoading(false);
-          return;
-        }
+        let historyItems: GalleryImageItem[] = [];
+        const historyAssetIds = new Set<string>();
 
-        const history = JSON.parse(savedHistory) as Array<{
-          id: string;
-          mode: string;
-          prompt: string;
-          effectivePrompt: string;
-          presetId: string;
-          size: { width: number; height: number };
-          quality: string;
-          outputFormat: string;
-          count: number;
-          status: string;
-          error?: string;
-          referenceAssetId?: string;
-          createdAt: string;
-          outputs: Array<{
+        if (savedHistory) {
+          const history = JSON.parse(savedHistory) as Array<{
             id: string;
+            mode: string;
+            prompt: string;
+            effectivePrompt: string;
+            presetId: string;
+            size: { width: number; height: number };
+            quality: string;
+            outputFormat: string;
+            count: number;
             status: string;
-            asset?: {
-              id: string;
-              url: string;
-              fileName: string;
-              mimeType: string;
-              width: number;
-              height: number;
-            };
             error?: string;
+            referenceAssetId?: string;
+            createdAt: string;
+            outputs: Array<{
+              id: string;
+              status: string;
+              asset?: {
+                id: string;
+                url: string;
+                fileName: string;
+                mimeType: string;
+                width: number;
+                height: number;
+              };
+              error?: string;
+            }>;
           }>;
-        }>;
 
-        const galleryItems: GalleryImageItem[] = [];
-        for (const record of history) {
-          for (const output of record.outputs) {
-            if (output.status === "succeeded" && output.asset) {
-              galleryItems.push({
-                outputId: output.id,
-                generationId: record.id,
-                mode: record.mode as GalleryImageItem["mode"],
-                prompt: record.prompt,
-                effectivePrompt: record.effectivePrompt,
-                presetId: record.presetId,
-                size: record.size,
-                quality: record.quality as GalleryImageItem["quality"],
-                outputFormat: record.outputFormat as GalleryImageItem["outputFormat"],
-                createdAt: record.createdAt,
-                asset: output.asset
-              });
+          for (const record of history) {
+            for (const output of record.outputs) {
+              if (output.status === "succeeded" && output.asset) {
+                historyAssetIds.add(output.asset.id);
+                historyItems.push({
+                  outputId: output.id,
+                  generationId: record.id,
+                  mode: record.mode as GalleryImageItem["mode"],
+                  prompt: record.prompt,
+                  effectivePrompt: record.effectivePrompt,
+                  presetId: record.presetId,
+                  size: record.size,
+                  quality: record.quality as GalleryImageItem["quality"],
+                  outputFormat: record.outputFormat as GalleryImageItem["outputFormat"],
+                  createdAt: record.createdAt,
+                  asset: output.asset
+                });
+              }
             }
           }
         }
 
-        galleryItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        setItems(galleryItems);
+        // 尝试从 IndexedDB 恢复丢失或孤立的图片
+        try {
+          const dbAssets = await listLocalAssets();
+          const restoredItems: GalleryImageItem[] = [];
+
+          for (const assetRecord of dbAssets) {
+            if (!historyAssetIds.has(assetRecord.id)) {
+              // 这是孤儿图片（在数据库里但不在历史记录里）
+              const dataUrl = await blobToDataUrl(assetRecord.blob);
+              restoredItems.push({
+                outputId: `restore-${assetRecord.id}`,
+                generationId: `restored-session`,
+                mode: "generate",
+                prompt: "(已从本地存储恢复)",
+                effectivePrompt: "",
+                presetId: "none",
+                size: { width: assetRecord.width, height: assetRecord.height },
+                quality: "auto" as GalleryImageItem["quality"],
+                outputFormat: assetRecord.mimeType === "image/jpeg" ? "jpeg" : "png",
+                createdAt: assetRecord.createdAt,
+                asset: {
+                  id: assetRecord.id,
+                  url: dataUrl,
+                  fileName: assetRecord.fileName,
+                  mimeType: assetRecord.mimeType,
+                  width: assetRecord.width,
+                  height: assetRecord.height
+                }
+              });
+            }
+          }
+
+          if (restoredItems.length > 0) {
+            historyItems = [...historyItems, ...restoredItems];
+          }
+        } catch (dbError) {
+          console.error("Failed to scan IndexedDB for orphaned assets:", dbError);
+        }
+
+        historyItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setItems(historyItems);
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "Gallery 加载失败。");
       } finally {
