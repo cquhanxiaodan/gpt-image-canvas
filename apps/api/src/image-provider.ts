@@ -1,12 +1,7 @@
-import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError, toFile } from "openai";
+import type { ApiConfig, ImageQuality, ImageSize, OutputFormat, ReferenceImageInput } from "./contracts.js";
+import { toFile } from "openai";
 import type { Image, ImageEditParamsNonStreaming, ImageGenerateParamsNonStreaming, ImagesResponse } from "openai/resources/images";
-import {
-  IMAGE_MODEL,
-  type ImageQuality,
-  type ImageSize,
-  type OutputFormat,
-  type ReferenceImageInput
-} from "./contracts.js";
+import { IMAGE_MODEL } from "./contracts.js";
 
 export interface ImageProviderInput {
   originalPrompt: string;
@@ -71,7 +66,7 @@ type FlexibleImageEditParams = Omit<ImageEditParamsNonStreaming, "size"> & {
   size: string;
 };
 
-export function getOpenAIImageProviderConfig():
+export function getOpenAIImageProviderConfig(apiConfig?: ApiConfig):
   | {
       ok: true;
       config: OpenAIImageProviderConfig;
@@ -80,21 +75,27 @@ export function getOpenAIImageProviderConfig():
       ok: false;
       error: ProviderError;
     } {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = apiConfig?.apiKey?.trim();
   if (!apiKey) {
     return {
       ok: false,
-      error: new ProviderError("missing_api_key", "服务器缺少 OPENAI_API_KEY，无法生成图像。", 500)
+      error: new ProviderError("missing_api_key", "请在 AI 面板右上角的「API 设置」中配置你自己的 API Key。", 400)
     };
   }
 
-  const baseURL = process.env.OPENAI_BASE_URL?.trim();
+  const baseURL = apiConfig?.baseURL?.trim();
+  if (!baseURL) {
+    return {
+      ok: false,
+      error: new ProviderError("missing_api_key", "请在 AI 面板右上角的「API 设置」中配置 Base URL。", 400)
+    };
+  }
 
   return {
     ok: true,
     config: {
       apiKey,
-      baseURL: baseURL || undefined,
+      baseURL,
       model: getConfiguredImageModel(),
       timeoutMs: parsePositiveInteger(process.env.OPENAI_IMAGE_TIMEOUT_MS, DEFAULT_OPENAI_IMAGE_TIMEOUT_MS)
     }
@@ -110,31 +111,43 @@ export function createOpenAIImageProvider(config: OpenAIImageProviderConfig): Im
 }
 
 class OpenAIImageProvider implements ImageProvider {
-  private readonly client: OpenAI;
+  private readonly apiKey: string;
+  private readonly baseURL: string;
+  private readonly model: string;
+  private readonly timeoutMs: number;
 
-  constructor(private readonly config: OpenAIImageProviderConfig) {
-    this.client = new OpenAI({
-      apiKey: config.apiKey,
-      baseURL: config.baseURL,
-      timeout: config.timeoutMs
-    });
+  constructor(config: OpenAIImageProviderConfig) {
+    this.apiKey = config.apiKey;
+    this.baseURL = config.baseURL || "https://api.openai.com/v1";
+    this.model = config.model;
+    this.timeoutMs = config.timeoutMs;
   }
 
   async generate(input: ImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
     try {
-      const response = await this.client.images.generate(
-        imageGenerateRequestBody({
-          model: this.config.model,
-          prompt: input.prompt,
-          size: input.sizeApiValue,
-          quality: input.quality,
-          output_format: input.outputFormat,
-          n: input.count
-        }),
-        { signal }
+      const response = await fetchWithRetry(
+        `${this.baseURL}/images/generations`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`
+          },
+          body: JSON.stringify({
+            model: this.model,
+            prompt: input.prompt,
+            size: input.sizeApiValue,
+            quality: input.quality,
+            output_format: input.outputFormat,
+            n: input.count
+          }),
+          signal
+        },
+        this.timeoutMs
       );
 
-      return await normalizeProviderResponse(response, input.sizeApiValue, this.config.model, signal);
+      const data = (await response.json()) as ImagesResponse;
+      return await normalizeProviderResponse(data, input.sizeApiValue, this.model, signal);
     } catch (error) {
       throw toProviderError(error);
     }
@@ -143,34 +156,57 @@ class OpenAIImageProvider implements ImageProvider {
   async edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
     try {
       const reference = await dataUrlToFile(input.referenceImage);
-      const response = await this.client.images.edit(
-        imageEditRequestBody({
-          model: this.config.model,
-          image: [reference],
-          prompt: input.prompt,
-          size: input.sizeApiValue,
-          quality: input.quality,
-          output_format: input.outputFormat,
-          n: input.count
-        }),
-        { signal }
+      const formData = new FormData();
+      formData.append("model", this.model);
+      formData.append("image", reference);
+      formData.append("prompt", input.prompt);
+      formData.append("size", input.sizeApiValue);
+      formData.append("quality", input.quality);
+      formData.append("output_format", input.outputFormat);
+      formData.append("n", String(input.count));
+
+      const response = await fetchWithRetry(
+        `${this.baseURL}/images/generations`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`
+          },
+          body: formData,
+          signal
+        },
+        this.timeoutMs
       );
 
-      return await normalizeProviderResponse(response, input.sizeApiValue, this.config.model, signal);
+      const data = (await response.json()) as ImagesResponse;
+      return await normalizeProviderResponse(data, input.sizeApiValue, this.model, signal);
     } catch (error) {
       throw toProviderError(error);
     }
   }
 }
 
-function imageGenerateRequestBody(body: FlexibleImageGenerateParams): ImageGenerateParamsNonStreaming {
-  // The SDK's image size union can lag gpt-image-2's documented flexible-size support.
-  return body as unknown as ImageGenerateParamsNonStreaming;
-}
+async function fetchWithRetry(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-function imageEditRequestBody(body: FlexibleImageEditParams): ImageEditParamsNonStreaming {
-  // The SDK's image size union can lag gpt-image-2's documented flexible-size support.
-  return body as unknown as ImageEditParamsNonStreaming;
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: options.signal || controller.signal
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      const error = new Error(`HTTP ${response.status}: ${text}`) as Error & { status: number };
+      error.status = response.status;
+      throw error;
+    }
+
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function toProviderError(error: unknown): Error {
@@ -182,19 +218,43 @@ function toProviderError(error: unknown): Error {
     return error;
   }
 
-  if (error instanceof APIConnectionTimeoutError) {
-    return new ProviderError("upstream_failure", "OpenAI 图像服务请求超时，请稍后重试或降低分辨率。", 504);
+  const errorWithStatus = error as { status?: number; message?: string; code?: string };
+  const status = errorWithStatus.status;
+  const message = errorWithStatus.message || String(error);
+
+  if (status === 524) {
+    return new ProviderError(
+      "upstream_failure",
+      "上游图像服务响应超时（Cloudflare 524），请稍后重试或降低分辨率。",
+      504
+    );
   }
 
-  if (error instanceof APIError) {
-    return new ProviderError("upstream_failure", error.message || "OpenAI 图像服务请求失败。", providerHttpStatus(error.status));
+  if (status === 504) {
+    return new ProviderError(
+      "upstream_failure",
+      "OpenAI 图像服务请求超时，请稍后重试或降低分辨率。",
+      504
+    );
   }
 
-  if (error instanceof Error && error.message) {
-    return new ProviderError("upstream_failure", error.message, 502);
+  if (status === 403) {
+    return new ProviderError(
+      "upstream_failure",
+      `OpenAI 图像服务请求被拒绝（403）。请检查 API Key 和中转服务是否支持图片生成。`,
+      403
+    );
   }
 
-  return new ProviderError("upstream_failure", "OpenAI 图像服务请求失败。", 502);
+  if (status && status >= 400 && status < 600) {
+    return new ProviderError("upstream_failure", message, providerHttpStatus(status));
+  }
+
+  if (errorWithStatus.code === "UND_ERR_SOCKET" || message.includes("socket")) {
+    return new ProviderError("upstream_failure", "网络连接异常，请稍后重试。", 502);
+  }
+
+  return new ProviderError("upstream_failure", message, 502);
 }
 
 function providerHttpStatus(status: number | undefined): number {
@@ -207,7 +267,10 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 }
 
 function isAbortError(error: unknown): error is Error {
-  return error instanceof APIUserAbortError || (error instanceof DOMException && error.name === "AbortError");
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
 
 async function normalizeProviderResponse(

@@ -45,6 +45,7 @@ import {
   SIZE_PRESETS,
   STYLE_PRESETS,
   validateImageSize,
+  type ApiProvider,
   type GalleryImageItem,
   type GenerationCount,
   type GenerationRecord,
@@ -1259,6 +1260,38 @@ export function App() {
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
+  const [isApiDialogOpen, setIsApiDialogOpen] = useState(false);
+  const [apiProviders, setApiProviders] = useState<ApiProvider[]>(() => {
+    try {
+      const saved = localStorage.getItem("api-providers");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      const legacy = localStorage.getItem("api-config");
+      if (legacy) {
+        const parsed = JSON.parse(legacy);
+        if (parsed.apiKey && parsed.baseURL) {
+          return [{ id: crypto.randomUUID(), name: "默认供应商", apiKey: parsed.apiKey, baseURL: parsed.baseURL }];
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+  const [selectedProviderId, setSelectedProviderId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("api-selected-provider-id");
+      if (saved) return saved;
+    } catch {
+      // ignore
+    }
+    return "";
+  });
+  const [apiSecretTouched, setApiSecretTouched] = useState(false);
+  const [apiEditIndex, setApiEditIndex] = useState<number | null>(null);
+  const [apiEditForm, setApiEditForm] = useState<{ name: string; apiKey: string; baseURL: string }>({ name: "", apiKey: "", baseURL: "" });
   const [storageConfig, setStorageConfig] = useState<StorageConfigResponse | null>(null);
   const [storageForm, setStorageForm] = useState<StorageConfigFormState>(defaultStorageConfigForm);
   const [storageSecretTouched, setStorageSecretTouched] = useState(false);
@@ -1283,7 +1316,8 @@ export function App() {
   const isReferenceMode = generationMode === "reference";
   const isReferenceReady = isReferenceMode && referenceSelection.status === "ready";
   const referenceValidationMessage = isReferenceMode && !isReferenceReady ? referenceSelection.hint : "";
-  const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage;
+  const providerValidationMessage = apiProviders.length === 0 ? "请先在 API 供应商设置中添加配置。" : (apiProviders.find((p) => p.id === selectedProviderId) ? "" : "请先在 API 供应商设置中选择要使用的供应商。");
+  const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage || providerValidationMessage;
   const shouldShowValidation = Boolean(validationMessage);
   const canGenerate = !validationMessage;
 
@@ -1479,6 +1513,81 @@ export function App() {
     setStorageMessage("");
     setIsStorageDialogOpen(true);
   }
+
+  function openApiDialog(): void {
+    setApiEditIndex(null);
+    setApiEditForm({ name: "", apiKey: "", baseURL: "" });
+    setApiSecretTouched(false);
+    setIsApiDialogOpen(true);
+  }
+
+  function closeApiDialog(): void {
+    setIsApiDialogOpen(false);
+    setApiEditIndex(null);
+    setApiEditForm({ name: "", apiKey: "", baseURL: "" });
+  }
+
+  function selectProvider(id: string): void {
+    setSelectedProviderId(id);
+    localStorage.setItem("api-selected-provider-id", id);
+  }
+
+  function addProvider(): void {
+    const name = apiEditForm.name.trim() || `供应商 ${apiProviders.length + 1}`;
+    const apiKey = apiEditForm.apiKey.trim();
+    const baseURL = apiEditForm.baseURL.trim();
+    if (!apiKey || !baseURL) return;
+    const newProvider: ApiProvider = { id: crypto.randomUUID(), name, apiKey, baseURL };
+    const next = [...apiProviders, newProvider];
+    setApiProviders(next);
+    localStorage.setItem("api-providers", JSON.stringify(next));
+    if (!selectedProviderId) selectProvider(newProvider.id);
+    setApiEditIndex(null);
+    setApiEditForm({ name: "", apiKey: "", baseURL: "" });
+    setApiSecretTouched(false);
+  }
+
+  function startEditProvider(index: number): void {
+    const p = apiProviders[index];
+    setApiEditIndex(index);
+    setApiEditForm({ name: p.name, apiKey: p.apiKey, baseURL: p.baseURL });
+  }
+
+  function saveEditProvider(): void {
+    if (apiEditIndex === null) return;
+    const name = apiEditForm.name.trim() || `供应商 ${apiEditIndex + 1}`;
+    const apiKey = apiEditForm.apiKey.trim();
+    const baseURL = apiEditForm.baseURL.trim();
+    if (!apiKey || !baseURL) return;
+    const next = apiProviders.map((p, i) => i === apiEditIndex ? { ...p, name, apiKey, baseURL } : p);
+    setApiProviders(next);
+    localStorage.setItem("api-providers", JSON.stringify(next));
+    setApiEditIndex(null);
+    setApiEditForm({ name: "", apiKey: "", baseURL: "" });
+    setApiSecretTouched(false);
+  }
+
+  function deleteProvider(index: number): void {
+    const provider = apiProviders[index];
+    const next = apiProviders.filter((_, i) => i !== index);
+    setApiProviders(next);
+    localStorage.setItem("api-providers", JSON.stringify(next));
+    if (selectedProviderId === provider.id) {
+      selectProvider(next.length > 0 ? next[0].id : "");
+    }
+    if (apiEditIndex === index) {
+      setApiEditIndex(null);
+      setApiEditForm({ name: "", apiKey: "", baseURL: "" });
+    }
+  }
+
+  function cancelEditProvider(): void {
+    setApiEditIndex(null);
+    setApiEditForm({ name: "", apiKey: "", baseURL: "" });
+    setApiSecretTouched(false);
+  }
+
+  const selectedProvider = apiProviders.find((p) => p.id === selectedProviderId) ?? null;
 
   function closeStorageDialog(): void {
     setIsStorageDialogOpen(false);
@@ -1806,6 +1915,11 @@ export function App() {
         outputFormat: input.outputFormat,
         count: input.count
       };
+
+      if (selectedProvider) {
+        requestBody.apiKey = selectedProvider.apiKey;
+        requestBody.baseURL = selectedProvider.baseURL;
+      }
 
       if (requestMode === "reference" && referenceForRequest) {
         requestBody.referenceImage = referenceForRequest.referenceImage;
@@ -2179,6 +2293,23 @@ export function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                aria-label="API 设置"
+                className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
+                  apiProviders.length > 0
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 hover:text-neutral-900"
+                }`}
+                data-testid="api-settings-button"
+                title={apiProviders.length > 0 ? `已配置 ${apiProviders.length} 个供应商` : "API 设置"}
+                type="button"
+                onClick={openApiDialog}
+              >
+                <svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
               <button
                 aria-label="云存储设置"
                 className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
@@ -2798,6 +2929,177 @@ export function App() {
                 {isStorageSaving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <CheckCircle2 className="size-4" aria-hidden="true" />}
                 保存
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isApiDialogOpen ? (
+        <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-neutral-950/45 px-4 py-6" data-testid="api-dialog">
+          <div
+            aria-labelledby="api-dialog-title"
+            aria-modal="true"
+            className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-2xl"
+            role="dialog"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-neutral-200 px-5 py-4">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-neutral-950" id="api-dialog-title">
+                  API 供应商
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-neutral-500">管理多组 API 配置，生成时可自由切换。</p>
+              </div>
+              <button
+                aria-label="关闭 API 设置"
+                className="history-icon-action"
+                type="button"
+                onClick={closeApiDialog}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-5">
+              {apiEditIndex !== null ? (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <button className="text-xs text-neutral-500 hover:text-neutral-900" type="button" onClick={cancelEditProvider}>
+                      ← 返回列表
+                    </button>
+                    <span className="text-sm font-medium text-neutral-700">
+                      {apiEditIndex === -1 ? "添加供应商" : "编辑供应商"}
+                    </span>
+                  </div>
+                  <label className="block">
+                    <span className="control-label">名称</span>
+                    <input
+                      className="field-control"
+                      value={apiEditForm.name}
+                      onChange={(event) => setApiEditForm((c) => ({ ...c, name: event.target.value }))}
+                      placeholder="例如：OpenAI 官方"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="control-label">API Key</span>
+                    <input
+                      className="field-control"
+                      data-testid="api-key"
+                      type={apiSecretTouched ? "password" : "text"}
+                      value={apiEditForm.apiKey}
+                      onChange={(event) => {
+                        setApiSecretTouched(true);
+                        setApiEditForm((c) => ({ ...c, apiKey: event.target.value }));
+                      }}
+                      placeholder="sk-..."
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="control-label">Base URL</span>
+                    <input
+                      className="field-control"
+                      data-testid="api-base-url"
+                      value={apiEditForm.baseURL}
+                      onChange={(event) => setApiEditForm((c) => ({ ...c, baseURL: event.target.value }))}
+                      placeholder="https://your-api.com/v1"
+                    />
+                  </label>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      className="primary-action flex-1 h-9 text-sm"
+                      type="button"
+                      disabled={!apiEditForm.apiKey.trim() || !apiEditForm.baseURL.trim()}
+                      onClick={apiEditIndex === -1 ? addProvider : saveEditProvider}
+                    >
+                      保存
+                    </button>
+                    <button className="h-9 rounded-md border border-neutral-200 px-3 text-sm text-neutral-600 hover:bg-neutral-50" type="button" onClick={cancelEditProvider}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <span className="text-xs font-medium text-neutral-500">当前使用</span>
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="field-control flex-1"
+                        value={selectedProviderId}
+                        onChange={(event) => selectProvider(event.target.value)}
+                      >
+                        {apiProviders.length === 0 && (
+                          <option value="">未配置供应商</option>
+                        )}
+                        {apiProviders.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 pt-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-neutral-500">供应商列表</span>
+                      <button
+                        className="text-xs text-cyan-600 hover:text-cyan-700"
+                        type="button"
+                        onClick={() => {
+                          setApiEditIndex(-1);
+                          setApiEditForm({ name: "", apiKey: "", baseURL: "" });
+                          setApiSecretTouched(false);
+                        }}
+                      >
+                        + 添加
+                      </button>
+                    </div>
+                    {apiProviders.length === 0 && (
+                      <p className="py-3 text-center text-xs text-neutral-400">暂无供应商，请点击「+ 添加」配置。</p>
+                    )}
+                    <div className="space-y-1">
+                      {apiProviders.map((p, index) => (
+                        <div
+                          key={p.id}
+                          className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition ${
+                            p.id === selectedProviderId
+                              ? "border-cyan-200 bg-cyan-50"
+                              : "border-neutral-200 hover:bg-neutral-50"
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium text-neutral-900 truncate">{p.name}</span>
+                              {p.id === selectedProviderId && (
+                                <span className="inline-flex h-1.5 w-1.5 rounded-full bg-cyan-500" />
+                              )}
+                            </div>
+                            <div className="text-xs text-neutral-400 truncate">{p.baseURL}</div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <button
+                              className="h-6 w-6 inline-flex items-center justify-center rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100"
+                              type="button"
+                              onClick={() => startEditProvider(index)}
+                              title="编辑"
+                            >
+                              <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                              </svg>
+                            </button>
+                            <button
+                              className="h-6 w-6 inline-flex items-center justify-center rounded text-neutral-400 hover:text-red-600 hover:bg-red-50"
+                              type="button"
+                              onClick={() => deleteProvider(index)}
+                              title="删除"
+                            >
+                              <X className="size-3.5" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

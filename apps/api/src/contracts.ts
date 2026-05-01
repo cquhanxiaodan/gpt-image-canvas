@@ -15,6 +15,8 @@ export {
 } from "@gpt-image-canvas/shared";
 
 export type {
+  ApiConfig,
+  ApiProvider,
   AppConfig,
   AssetCloudUploadStatus,
   CloudStorageProvider,

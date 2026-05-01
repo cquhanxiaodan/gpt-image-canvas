@@ -41,7 +41,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-实时生成前，请在 `.env` 中设置 `OPENAI_API_KEY`。应用默认使用官方 OpenAI Image API 和 `gpt-image-2`。如需转发到 OpenAI 兼容端点，请在 `.env` 中设置 `OPENAI_BASE_URL`；如需使用不同的兼容图像模型，请设置 `OPENAI_IMAGE_MODEL`。
+实时生成前，请在应用内点击「API 设置」配置你自己的 API Key 和 Base URL。应用默认使用 `gpt-image-2` 模型；如需使用不同的兼容图像模型，可在 `.env` 中设置 `OPENAI_IMAGE_MODEL`。
 
 打开 `http://localhost:5173` 使用 Web 应用。
 
@@ -75,7 +75,7 @@ pnpm typecheck
 pnpm build
 ```
 
-请不要把凭证写进提示词或日志。OpenAI API key 只应放在由 `.env.example` 复制出来的本地 `.env` 文件里，不要粘贴到 Codex 对话中。如果需要让 Codex 验证实时生成，请要求它使用现有 `.env`，且不要打印环境变量值。
+请不要把凭证写进提示词或日志。OpenAI API key 只应由用户在应用内的「API 设置」弹窗中配置，不要粘贴到 Codex 对话中。如果需要让 Codex 验证实时生成，请要求它使用已配置的用户 API Key，且不要打印凭证值。
 
 如果涉及 UI 修改，让 Codex 运行 `pnpm dev`，并在浏览器中验证 Vite 应用 `http://localhost:5173`。本地临时文件应放在 `.codex-temp/` 下，该目录已被 Git 忽略。
 
@@ -145,7 +145,7 @@ macOS/Linux：
 NODE_IMAGE=node:22-bookworm-slim docker compose up --build
 ```
 
-`OPENAI_API_KEY` 可以在本地启动检查时留空。应用仍会启动，生成端点会返回缺少 key 的 JSON 错误，直到配置凭证为止。
+`OPENAI_API_KEY` 和 `OPENAI_BASE_URL` 已不再支持。用户必须在应用内的「API 设置」弹窗中自行配置 API Key 和 Base URL，否则生成请求会返回缺少配置的 JSON 错误。
 
 ## 腾讯云 COS 备份
 
@@ -176,7 +176,8 @@ Docker Compose 会将宿主机 `./data` 绑定挂载到 `/app/data`，因此项�
 
 ## 安全与隐私说明
 
-- 密钥只从 `.env` 或运行时环境变量读取。不要提交 `.env`、展开后的 Docker Compose 配置输出、包含 key 的 shell 历史或包含密钥值的日志。
+- 用户 API Key 和 Base URL 仅由应用内「API 设置」弹窗配置，并随每次生成请求传递给后端。后端不再从 `.env` 读取这些配置。
+- 密钥不应出现在日志或聊天回复中。配置 COS 后，请将 `data/gpt-image-canvas.sqlite` 也视为敏感文件。
 - 从 UI 保存的 COS SecretKey 会存储在本地 SQLite 中，并由设置接口掩码返回。配置 COS 后，请将 `data/gpt-image-canvas.sqlite` 也视为敏感文件。
 - 提示词、项目状态、生成资产和 SQLite 数据都是 `DATA_DIR` 下的本地运行时数据。除非你有意导出特定资产，否则应将 `data/` 视为私有数据。
 - 发布分支前，请检查 `git status --short`，确认只暂存了源代码、文档和预期 metadata。`.env`、`.ralph/`、`.codex-temp/`、`data/`、生成图像、SQLite 数据库和构建输出都应保持未跟踪。
@@ -184,9 +185,8 @@ Docker Compose 会将宿主机 `./data` 绑定挂载到 `/app/data`，因此项�
 
 ## 故障排查
 
-- 缺少或空的 `OPENAI_API_KEY`：应用仍会启动；文生图和参考图请求会返回缺少 key 的 JSON 错误。将有效 key 添加到 `.env` 后，重启 API 或 Docker 容器。
-- 自定义 provider 地址：在 `.env` 中设置 `OPENAI_BASE_URL`，例如 `https://api.example.com/v1`，然后重启 API 或 Docker 容器。该端点必须兼容 OpenAI API，并支持当前配置的图像模型。
-- 缺少模型访问权限：确认 `OPENAI_API_KEY` 所属的 OpenAI organization 和 project 可以访问当前配置的图像模型。如果兼容端点需要不同模型名，请设置 `OPENAI_IMAGE_MODEL`。
+- API Key 或 Base URL 缺失：请在应用内点击「API 设置」，配置你自己的 API Key 和 Base URL。不配置则无法生成图像。
+- 缺少模型访问权限：确认配置的 API Key 可以访问当前配置的图像模型（默认 `gpt-image-2`）。如果兼容端点需要不同模型名，请联系 API Key 提供方确认支持的模型名。
 - 高分辨率生成超时：默认上游请求超时为 20 分钟，可在 `.env` 中调大 `OPENAI_IMAGE_TIMEOUT_MS`。
 - 端口已被占用：为 API/Docker 运行时设置 `.env` 中的 `PORT`；如果 Web 的 `5173` 被占用，请先关闭占用进程，或显式运行 `pnpm web:dev -- --port 5174` 并打开打印出来的地址。
 - Docker 构建无法拉取 Node 基础镜像：在 macOS/Linux 可用 `NODE_IMAGE=node:23-bullseye-slim docker compose up --build` 使用本地缓存镜像；在 Windows PowerShell 可先运行 `$env:NODE_IMAGE = 'node:23-bullseye-slim'`，再运行 `docker compose up --build`；也可以恢复 Docker Hub 访问后重新运行 `docker compose up --build`。

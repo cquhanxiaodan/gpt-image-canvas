@@ -41,7 +41,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-Set `OPENAI_API_KEY` in `.env` before live generation. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env`; to use a different compatible image model, set `OPENAI_IMAGE_MODEL`.
+Configure your own API Key and Base URL from the in-app "API Settings" dialog before live generation. The app uses `gpt-image-2` by default; to use a different compatible image model, set `OPENAI_IMAGE_MODEL` in `.env`.
 
 Open the web app at `http://localhost:5173`.
 
@@ -75,7 +75,7 @@ pnpm typecheck
 pnpm build
 ```
 
-Keep credentials out of prompts and logs. Put your OpenAI API key only in a local `.env` file copied from `.env.example`, and do not paste the key into a Codex message. If Codex needs to verify live generation, ask it to use the existing `.env` without printing environment values.
+Keep credentials out of prompts and logs. OpenAI API keys are only configured by end users from the in-app "API Settings" dialog, and should never be pasted into a Codex message. If Codex needs to verify live generation, ask it to use a user-provided API key without printing the credential value.
 
 For UI changes, have Codex run `pnpm dev` and verify the Vite app in a browser at `http://localhost:5173`. Local scratch files should stay under `.codex-temp/`, which is ignored by Git.
 
@@ -145,7 +145,7 @@ macOS/Linux:
 NODE_IMAGE=node:22-bookworm-slim docker compose up --build
 ```
 
-`OPENAI_API_KEY` may be left empty for local boot checks. The app still starts, and generation endpoints return a missing-key JSON error until credentials are configured.
+API Key and Base URL are no longer supported via `.env`. Users must configure them from the in-app "API Settings" dialog. The app still starts, and generation endpoints return a missing-configuration JSON error until the user provides their own credentials.
 
 ## Tencent Cloud COS Backup
 
@@ -176,7 +176,8 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 
 ## Security / Privacy Notes
 
-- Secrets are read only from `.env` or runtime environment variables. Never commit `.env`, expanded Docker Compose config output, shell history containing keys, or logs that include secret values.
+- User API Key and Base URL are configured per-user from the in-app "API Settings" dialog and are passed with each generation request. The backend no longer reads these from `.env`.
+- Secrets should never appear in logs or chat replies. COS SecretKey values saved from the UI are stored locally in SQLite and are masked by the settings API. Treat `data/gpt-image-canvas.sqlite` as sensitive when COS is configured.
 - COS SecretKey values saved from the UI are stored locally in SQLite and are masked by the settings API. Treat `data/gpt-image-canvas.sqlite` as sensitive when COS is configured.
 - Prompts, project state, generated assets, and SQLite data are local runtime data under `DATA_DIR`. Treat `data/` as private unless you intentionally export specific assets.
 - Before publishing a branch, check `git status --short` and confirm only source, docs, and intended metadata are staged. `.env`, `.ralph/`, `.codex-temp/`, `data/`, generated images, SQLite databases, and build output should stay untracked.
@@ -184,9 +185,8 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 
 ## Troubleshooting
 
-- Missing or empty `OPENAI_API_KEY`: the app still boots; text-to-image and reference-image requests return a missing-key JSON error. Add a valid key to `.env` and restart the API or Docker container.
-- Custom provider endpoint: set `OPENAI_BASE_URL` in `.env`, for example `https://api.example.com/v1`, then restart the API or Docker container. The endpoint must be OpenAI-compatible and support the configured image model.
-- Missing model access: confirm the OpenAI organization and project used by `OPENAI_API_KEY` can access the configured image model. Set `OPENAI_IMAGE_MODEL` if your compatible endpoint expects a different model name.
+- Missing API Key or Base URL: open the in-app "API Settings" dialog and configure your own credentials. Generation requests will fail with a missing-configuration error until you provide them.
+- Missing model access: confirm the configured API Key can access the configured image model (default `gpt-image-2`). Ask your API Key provider for the supported model name if needed.
 - High-resolution generation timeouts: upstream image requests default to 20 minutes; increase `OPENAI_IMAGE_TIMEOUT_MS` in `.env` if needed.
 - Port already in use: set `PORT` in `.env` for the API/Docker runtime. If Web port `5173` is occupied, stop the process using it, or run `pnpm web:dev -- --port 5174` explicitly and open the printed URL.
 - Docker build cannot pull the Node base image: use a locally cached image with `NODE_IMAGE=node:23-bullseye-slim docker compose up --build` on macOS/Linux or `$env:NODE_IMAGE = 'node:23-bullseye-slim'` followed by `docker compose up --build` in Windows PowerShell, or restore Docker Hub access and rerun `docker compose up --build`.

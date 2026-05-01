@@ -13,6 +13,7 @@ import {
   STYLE_PRESETS,
   composePrompt,
   validateSceneImageSize,
+  type ApiConfig,
   type AppConfig,
   type GenerationCount,
   type ImageQuality,
@@ -209,7 +210,8 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAIImageProviderConfig();
+  const apiConfig = parseApiConfig(payload.value);
+  const providerConfig = getOpenAIImageProviderConfig(apiConfig);
   if (!providerConfig.ok) {
     return providerErrorJson(c, providerConfig.error);
   }
@@ -237,7 +239,8 @@ app.post("/api/images/edit", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAIImageProviderConfig();
+  const apiConfig = parseApiConfig(payload.value);
+  const providerConfig = getOpenAIImageProviderConfig(apiConfig);
   if (!providerConfig.ok) {
     return providerErrorJson(c, providerConfig.error);
   }
@@ -618,6 +621,24 @@ function parseDimension(value: unknown): number {
 
 function parseOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function parseApiConfig(input: unknown): ApiConfig | undefined {
+  if (!isRecord(input)) {
+    return undefined;
+  }
+
+  const apiKey = parseOptionalString(input.apiKey);
+  const baseURL = parseOptionalString(input.baseURL);
+
+  if (!apiKey && !baseURL) {
+    return undefined;
+  }
+
+  return {
+    apiKey,
+    baseURL
+  };
 }
 
 function stringValue(value: unknown): string | undefined {

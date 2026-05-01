@@ -12,10 +12,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    allowedHosts: ['.monkeycode-ai.online'],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8787",
-        changeOrigin: true
+        changeOrigin: true,
+        timeout: 600000,
+        proxyTimeout: 600000
       }
     }
   }

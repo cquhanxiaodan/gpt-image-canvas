@@ -312,6 +312,18 @@ export interface SaveStorageConfigRequest {
   cos?: SaveCosStorageConfig;
 }
 
+export interface ApiProvider {
+  id: string;
+  name: string;
+  apiKey: string;
+  baseURL: string;
+}
+
+export interface ApiConfig {
+  apiKey?: string;
+  baseURL?: string;
+}
+
 export interface StorageTestResult {
   ok: boolean;
   message: string;
