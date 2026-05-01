@@ -24,11 +24,27 @@ import {
   type GalleryResponse,
   type StylePresetId
 } from "@gpt-image-canvas/shared";
+import { getLocalAsset, listLocalAssets } from "./local-storage";
+
+const GENERATION_HISTORY_KEY = "gpt-image-canvas-history";
 
 const BASE_URL = import.meta.env.BASE_URL;
 
+function authHeaders(): Record<string, string> {
+  try {
+    const token = localStorage.getItem("auth_token");
+    if (token) {
+      return { Authorization: `Bearer ${token}` };
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
 function normalizeAssetUrl(url: string): string {
   if (url.startsWith('http')) return url;
+  if (url.startsWith('data:')) return url;
   if (url.startsWith('/api/')) return `${BASE_URL}${url.slice(1)}`;
   return `${BASE_URL}${url}`;
 }
@@ -79,44 +95,78 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   const statusTimerRef = useRef<number | undefined>();
 
   useEffect(() => {
-    const controller = new AbortController();
-
     async function loadGallery(): Promise<void> {
       setIsLoading(true);
       setError("");
 
       try {
-        const response = await fetch(`${BASE_URL}api/gallery`, {
-          signal: controller.signal
-        });
-        if (!response.ok) {
-          throw new Error(await readGalleryError(response));
-        }
-
-        const body = (await response.json()) as GalleryResponse;
-        if (!Array.isArray(body.items)) {
-          throw new Error("Gallery 服务返回了无法识别的数据。");
-        }
-
-        if (!controller.signal.aborted) {
-          setItems(body.items);
-        }
-      } catch (loadError) {
-        if (!controller.signal.aborted) {
-          setError(loadError instanceof Error ? loadError.message : "Gallery 加载失败。");
-        }
-      } finally {
-        if (!controller.signal.aborted) {
+        const savedHistory = localStorage.getItem(GENERATION_HISTORY_KEY);
+        if (!savedHistory) {
+          setItems([]);
           setIsLoading(false);
+          return;
         }
+
+        const history = JSON.parse(savedHistory) as Array<{
+          id: string;
+          mode: string;
+          prompt: string;
+          effectivePrompt: string;
+          presetId: string;
+          size: { width: number; height: number };
+          quality: string;
+          outputFormat: string;
+          count: number;
+          status: string;
+          error?: string;
+          referenceAssetId?: string;
+          createdAt: string;
+          outputs: Array<{
+            id: string;
+            status: string;
+            asset?: {
+              id: string;
+              url: string;
+              fileName: string;
+              mimeType: string;
+              width: number;
+              height: number;
+            };
+            error?: string;
+          }>;
+        }>;
+
+        const galleryItems: GalleryImageItem[] = [];
+        for (const record of history) {
+          for (const output of record.outputs) {
+            if (output.status === "succeeded" && output.asset) {
+              galleryItems.push({
+                outputId: output.id,
+                generationId: record.id,
+                mode: record.mode as GalleryImageItem["mode"],
+                prompt: record.prompt,
+                effectivePrompt: record.effectivePrompt,
+                presetId: record.presetId,
+                size: record.size,
+                quality: record.quality as GalleryImageItem["quality"],
+                outputFormat: record.outputFormat as GalleryImageItem["outputFormat"],
+                createdAt: record.createdAt,
+                asset: output.asset
+              });
+            }
+          }
+        }
+
+        galleryItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setItems(galleryItems);
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : "Gallery 加载失败。");
+      } finally {
+        setIsLoading(false);
       }
     }
 
     void loadGallery();
-
-    return () => {
-      controller.abort();
-    };
   }, []);
 
   useEffect(() => {
@@ -207,12 +257,31 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
     setError("");
 
     try {
-      const response = await fetch(`${BASE_URL}api/gallery/${encodeURIComponent(item.outputId)}`, {
-        method: "DELETE"
-      });
-      if (!response.ok) {
-        throw new Error(await readGalleryError(response));
+      const savedHistory = localStorage.getItem(GENERATION_HISTORY_KEY);
+      if (savedHistory) {
+        const history = JSON.parse(savedHistory);
+        const updatedHistory = history.map((record: { outputs: Array<{ id: string }> }) => ({
+          ...record,
+          outputs: record.outputs.filter((output: { id: string }) => output.id !== item.outputId)
+        })).filter((record: { outputs: string | any[] }) => record.outputs.length > 0);
+        localStorage.setItem(GENERATION_HISTORY_KEY, JSON.stringify(updatedHistory));
       }
+
+      if (item.asset?.id) {
+        await deleteLocalAsset(item.asset.id);
+      }
+
+      setItems((current) => current.filter((galleryItem) => galleryItem.outputId !== item.outputId));
+      setSelectedItem((current) => (current?.outputId === item.outputId ? null : current));
+      setPendingDeleteItem(null);
+      onDeleted(item.outputId);
+      showStatus("已从 Gallery 和生成历史移除。");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "删除失败，请重试。");
+    } finally {
+      setDeletingOutputId(null);
+    }
+  }
 
       setItems((current) => current.filter((galleryItem) => galleryItem.outputId !== item.outputId));
       setSelectedItem((current) => (current?.outputId === item.outputId ? null : current));

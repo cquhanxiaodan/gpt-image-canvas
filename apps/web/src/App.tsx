@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Sparkles,
   Square,
+  Upload,
   X,
   XCircle
 } from "lucide-react";
@@ -44,6 +45,7 @@ import {
   OUTPUT_FORMATS,
   SIZE_PRESETS,
   STYLE_PRESETS,
+  composePrompt,
   validateImageSize,
   type ApiProvider,
   type GalleryImageItem,
@@ -57,12 +59,20 @@ import {
   type OutputFormat,
   type ProjectState,
   type ReferenceImageInput,
-  type SaveStorageConfigRequest,
   type SizePreset,
-  type StorageConfigResponse,
-  type StorageTestResult,
   type StylePresetId
 } from "@gpt-image-canvas/shared";
+import {
+  blobToDataUrl,
+  clearAllLocalAssets,
+  dataUrlToBlob,
+  deleteLocalAsset,
+  getLocalAsset,
+  listLocalAssets,
+  saveLocalAsset,
+  type LocalAssetRecord
+} from "./local-storage";
+import { generateImage, editImage } from "./openai-client";
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
 const HISTORY_COLLAPSED_LIMIT = 3;
@@ -310,6 +320,8 @@ function generationValidationMessage(promptValue: string, widthValue: number, he
   return promptValue.trim() ? sizeValidationMessage(widthValue, heightValue) : "请输入提示词。";
 }
 
+const PROJECT_SNAPSHOT_KEY = "gpt-image-canvas-project";
+const GENERATION_HISTORY_KEY = "gpt-image-canvas-history";
 const BASE_URL = import.meta.env.BASE_URL;
 
 function routeFromLocation(): AppRoute {
@@ -1170,11 +1182,15 @@ function BrandName() {
 function TopNavigation({
   route,
   onNavigate,
-  onPreloadGallery
+  onPreloadGallery,
+  onExport,
+  onImport
 }: {
   route: AppRoute;
   onNavigate: (route: AppRoute) => void;
   onPreloadGallery: () => void;
+  onExport: () => void;
+  onImport: () => void;
 }) {
   return (
     <header className="top-navigation">
@@ -1218,6 +1234,30 @@ function TopNavigation({
             Gallery
           </a>
         </nav>
+        <div className="top-navigation__actions">
+          <button
+            className="top-navigation__action-btn"
+            title="导出所有数据（包括画布、历史和图像）"
+            type="button"
+            onClick={onExport}
+          >
+            <Download className="size-4" aria-hidden="true" />
+            <span className="sr-only">导出数据</span>
+          </button>
+          <button
+            className="top-navigation__action-btn"
+            title="导入备份数据"
+            type="button"
+            onClick={onImport}
+          >
+            <Upload className="size-4" aria-hidden="true" />
+            <span className="sr-only">导入数据</span>
+          </button>
+        </div>
+        <div className="local-storage-notice" title="所有数据（包括画布、生成历史和图像）都存储在浏览器本地。请定期导出备份。">
+          <span className="local-storage-notice__icon">💾</span>
+          <span className="local-storage-notice__text">数据存储在本地</span>
+        </div>
       </div>
     </header>
   );
@@ -1411,81 +1451,35 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-
     async function loadProject(): Promise<void> {
       setSaveStatus("loading");
       setSaveError("");
 
       try {
-        const response = await fetch(`${BASE_URL}api/project`, {
-          signal: controller.signal
-        });
+        const savedSnapshot = localStorage.getItem(PROJECT_SNAPSHOT_KEY);
+        const savedHistory = localStorage.getItem(GENERATION_HISTORY_KEY);
 
-        if (!response.ok) {
-          throw new Error(`Project load failed with ${response.status}`);
+        if (savedSnapshot) {
+          const snapshot = filterLoadingPlaceholdersFromSnapshot(JSON.parse(savedSnapshot));
+          if (isPersistedSnapshot(snapshot)) {
+            setProjectSnapshot(snapshot);
+          }
         }
 
-        const project = (await response.json()) as ProjectState;
-        const snapshot = filterLoadingPlaceholdersFromSnapshot(project.snapshot);
-        if (isPersistedSnapshot(snapshot)) {
-          setProjectSnapshot(snapshot);
+        if (savedHistory) {
+          setGenerationHistory(JSON.parse(savedHistory));
         }
-        setGenerationHistory(project.history);
+
         setSaveStatus("saved");
       } catch {
-        if (controller.signal.aborted) {
-          return;
-        }
-
         setSaveStatus("error");
         setSaveError("无法载入已保存项目，将使用空白画布。");
       } finally {
-        if (!controller.signal.aborted) {
-          setIsProjectLoaded(true);
-        }
+        setIsProjectLoaded(true);
       }
     }
 
     void loadProject();
-
-    return () => {
-      controller.abort();
-    };
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function loadStorageConfig(): Promise<void> {
-      try {
-        const response = await fetch(`${BASE_URL}api/storage/config`, {
-          signal: controller.signal
-        });
-        if (!response.ok) {
-          throw new Error(`Storage config load failed with ${response.status}`);
-        }
-
-        const config = (await response.json()) as StorageConfigResponse;
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        setStorageConfig(config);
-        setStorageForm(storageConfigToForm(config));
-        setStorageSecretTouched(false);
-      } catch {
-        if (!controller.signal.aborted) {
-          setStorageError("Unable to load cloud storage settings.");
-        }
-      }
-    }
-
-    void loadStorageConfig();
-
-    return () => {
-      controller.abort();
-    };
   }, []);
 
   useEffect(() => {
@@ -1522,6 +1516,102 @@ export function App() {
     setApiEditForm({ name: "", apiKey: "", baseURL: "" });
     setApiSecretTouched(false);
     setIsApiDialogOpen(true);
+  }
+
+  async function exportAllData(): Promise<void> {
+    try {
+      const projectSnapshot = localStorage.getItem(PROJECT_SNAPSHOT_KEY);
+      const generationHistory = localStorage.getItem(GENERATION_HISTORY_KEY);
+      const apiProvidersData = localStorage.getItem("api-providers");
+      const assets = await listLocalAssets();
+
+      const exportData = {
+        version: "1.0",
+        exportedAt: new Date().toISOString(),
+        project: projectSnapshot ? JSON.parse(projectSnapshot) : null,
+        history: generationHistory ? JSON.parse(generationHistory) : [],
+        apiProviders: apiProvidersData ? JSON.parse(apiProvidersData) : [],
+        assets: await Promise.all(assets.map(async (asset) => ({
+          id: asset.id,
+          fileName: asset.fileName,
+          mimeType: asset.mimeType,
+          width: asset.width,
+          height: asset.height,
+          createdAt: asset.createdAt,
+          data: await blobToDataUrl(asset.blob)
+        })))
+      };
+
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `gpt-image-canvas-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setGenerationMessage("已导出所有数据，请妥善保存备份文件。");
+    } catch {
+      setGenerationError("导出失败，请重试。");
+    }
+  }
+
+  async function importDataFile(file: File): Promise<void> {
+    try {
+      const text = await file.text();
+      const importData = JSON.parse(text);
+
+      if (!importData.version || !importData.project) {
+        throw new Error("无效的备份文件格式。");
+      }
+
+      if (importData.project) {
+        localStorage.setItem(PROJECT_SNAPSHOT_KEY, JSON.stringify(importData.project));
+      }
+
+      if (importData.history) {
+        localStorage.setItem(GENERATION_HISTORY_KEY, JSON.stringify(importData.history));
+      }
+
+      if (importData.apiProviders) {
+        localStorage.setItem("api-providers", JSON.stringify(importData.apiProviders));
+      }
+
+      if (Array.isArray(importData.assets)) {
+        await clearAllLocalAssets();
+        for (const asset of importData.assets) {
+          const blob = dataUrlToBlob(asset.data);
+          await saveLocalAsset({
+            id: asset.id,
+            blob,
+            mimeType: asset.mimeType,
+            fileName: asset.fileName,
+            width: asset.width,
+            height: asset.height,
+            createdAt: asset.createdAt
+          });
+        }
+      }
+
+      setGenerationMessage("已成功导入数据，页面将刷新。");
+      window.location.reload();
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : "导入失败，请检查文件格式。");
+    }
+  }
+
+  function triggerImportFile(): void {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (file) {
+        void importDataFile(file);
+      }
+    };
+    input.click();
   }
 
   function closeApiDialog(): void {
@@ -1765,19 +1855,8 @@ export function App() {
       setSaveError("");
 
       try {
-        const response = await fetch(`${BASE_URL}api/project`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            snapshot: filterLoadingPlaceholdersFromSnapshot(editor.getSnapshot())
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`Project save failed with ${response.status}`);
-        }
+        const snapshot = filterLoadingPlaceholdersFromSnapshot(editor.getSnapshot());
+        localStorage.setItem(PROJECT_SNAPSHOT_KEY, JSON.stringify(snapshot));
 
         if (saveRequestRef.current === requestId) {
           setSaveStatus("saved");
@@ -1909,83 +1988,117 @@ export function App() {
         throw new Error("请先选择一张可用的参考图像。");
       }
 
-      const requestBody: Record<string, unknown> = {
+      if (!selectedProvider) {
+        throw new Error("请先配置 API 供应商。");
+      }
+
+      const openAIRequest = {
+        model: "gpt-image-1",
+        prompt: composePrompt(input.prompt.trim(), input.presetId),
+        n: input.count,
+        size: `${input.size.width}x${input.size.height}`,
+        quality: input.quality === "auto" ? undefined : input.quality,
+        response_format: "b64_json" as const,
+        output_format: input.outputFormat
+      };
+
+      let result: OpenAIImageGenerationResponse;
+
+      if (requestMode === "reference" && referenceForRequest) {
+        result = await editImage(selectedProvider.apiKey, selectedProvider.baseURL, {
+          ...openAIRequest,
+          image: referenceForRequest.referenceImage.dataUrl
+        });
+      } else {
+        result = await generateImage(selectedProvider.apiKey, selectedProvider.baseURL, openAIRequest);
+      }
+
+      const generationId = `local-gen-${Date.now()}-${requestId}`;
+      const outputs = await Promise.all(result.data.map(async (imageData, index) => {
+        const outputId = `output-${generationId}-${index}`;
+        if (imageData.b64_json) {
+          const assetId = `asset-${generationId}-${index}`;
+          const mimeType = input.outputFormat === "jpeg" ? "image/jpeg" : input.outputFormat === "webp" ? "image/webp" : "image/png";
+          const blob = dataUrlToBlob(`data:${mimeType};base64,${imageData.b64_json}`);
+          
+          await saveLocalAsset({
+            id: assetId,
+            blob,
+            mimeType,
+            fileName: `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`,
+            width: input.size.width,
+            height: input.size.height,
+            createdAt: new Date().toISOString()
+          });
+
+          const dataUrl = await blobToDataUrl(blob);
+          return {
+            id: outputId,
+            status: "succeeded" as const,
+            asset: {
+              id: assetId,
+              url: dataUrl,
+              fileName: `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`,
+              mimeType,
+              width: input.size.width,
+              height: input.size.height
+            }
+          };
+        }
+        return {
+          id: outputId,
+          status: "failed" as const,
+          error: "图像数据为空"
+        };
+      }));
+
+      const successCount = outputs.filter((o) => o.status === "succeeded").length;
+      const failureCount = outputs.length - successCount;
+      const status = successCount > 0 && failureCount > 0 ? "partial" : successCount > 0 ? "succeeded" : "failed";
+
+      const record = {
+        id: generationId,
+        mode: requestMode === "reference" ? "edit" : "generate",
         prompt: input.prompt.trim(),
+        effectivePrompt: composePrompt(input.prompt.trim(), input.presetId),
         presetId: input.presetId,
-        sizePresetId: input.sizePresetId,
         size: input.size,
         quality: input.quality,
         outputFormat: input.outputFormat,
-        count: input.count
+        count: input.count,
+        status,
+        error: failureCount > 0 ? `${failureCount} 张图像生成失败。` : undefined,
+        referenceAssetId: requestMode === "reference" && referenceForRequest ? referenceForRequest.referenceAssetId : undefined,
+        createdAt: new Date().toISOString(),
+        outputs
       };
 
-      if (selectedProvider) {
-        requestBody.apiKey = selectedProvider.apiKey;
-        requestBody.baseURL = selectedProvider.baseURL;
-      }
-
-      if (requestMode === "reference" && referenceForRequest) {
-        requestBody.referenceImage = referenceForRequest.referenceImage;
-        if (referenceForRequest.referenceAssetId) {
-          requestBody.referenceAssetId = referenceForRequest.referenceAssetId;
-        }
-      }
-
-      const response = await fetch(requestMode === "reference" ? `${BASE_URL}api/images/edit` : `${BASE_URL}api/images/generate`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
-
-      if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
-      }
-
-      const body = (await response.json()) as unknown;
-      if (!isGenerationResponse(body)) {
-        throw new Error("生成服务返回了无法识别的结果。");
-      }
-
-      // Convert relative asset URLs to absolute URLs for tldraw compatibility
-      body.record.outputs.forEach((output: { asset?: { url?: string; id?: string } }) => {
-        if (output.asset?.id && (!output.asset?.url || !output.asset.url.startsWith('http'))) {
-          output.asset.url = `${BASE_URL}api/assets/${output.asset.id}`;
-        }
-      });
-
-      if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
-        return;
-      }
-
-      await preloadGenerationRecordPreviews(body.record, controller.signal);
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
       }
 
       setGenerationHistory((history) =>
-        [body.record, ...history.filter((record) => record.id !== temporaryRecord.id && record.id !== body.record.id)].slice(0, 20)
+        [record, ...history.filter((r) => r.id !== temporaryRecord.id && r.id !== record.id)].slice(0, 20)
       );
-      const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, body.record);
-      const failedCount =
-        body.record.outputs.filter((output) => output.status === "failed").length +
-        Math.max(0, placeholderSet.placements.length - body.record.outputs.length);
-      const cloudFailedCount = cloudFailureCount(body.record);
+      localStorage.setItem(GENERATION_HISTORY_KEY, JSON.stringify(
+        [record, ...generationHistory.filter((r) => r.id !== temporaryRecord.id && r.id !== record.id)].slice(0, 20)
+      ));
+      
+      const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, record);
+      const cloudFailedCount = 0;
       if (insertedCount > 0) {
         if (cloudFailedCount > 0) {
-          setGenerationWarning(`已向画布插入 ${insertedCount} 张图像，本地已保存，${cloudFailedCount} 张云端上传失败。`);
+          setGenerationWarning(`已向画布插入 ${insertedCount} 张图像。`);
         } else {
           setGenerationMessage(
-            failedCount > 0
-              ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
+            failureCount > 0
+              ? `已向画布插入 ${insertedCount} 张图像，${failureCount} 张失败。`
               : `已向画布插入 ${insertedCount} 张图像。`
           );
         }
-        showGenerationCompleteNotification(body.record, insertedCount, failedCount);
+        showGenerationCompleteNotification(record, insertedCount, failureCount);
       } else {
-        setGenerationError(body.record.error || "没有可插入的成功图像。");
+        setGenerationError(record.error || "没有可插入的成功图像。");
       }
     } catch (error) {
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
@@ -2129,7 +2242,7 @@ export function App() {
     );
   }
 
-  function downloadHistoryRecord(record: GenerationRecord): void {
+  async function downloadHistoryRecord(record: GenerationRecord): Promise<void> {
     const asset = firstDownloadableAsset(record);
     setGenerationWarning("");
     if (!asset) {
@@ -2137,8 +2250,25 @@ export function App() {
       return;
     }
 
-    window.open(`${BASE_URL}api/assets/${encodeURIComponent(asset.id)}/download`, "_blank", "noopener,noreferrer");
-    setGenerationMessage("已打开原始资源下载。");
+    try {
+      const localAsset = await getLocalAsset(asset.id);
+      if (!localAsset) {
+        setGenerationError("本地存储中找不到该图像。");
+        return;
+      }
+
+      const url = URL.createObjectURL(localAsset.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = localAsset.fileName;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setGenerationMessage("已开始下载。");
+    } catch {
+      setGenerationError("下载失败，请重试。");
+    }
   }
 
   function reuseGalleryImage(item: GalleryImageItem): void {
@@ -2228,7 +2358,13 @@ export function App() {
 
   return (
     <div className="app-root">
-      <TopNavigation route={route} onNavigate={navigateToRoute} onPreloadGallery={preloadGalleryPage} />
+      <TopNavigation
+        route={route}
+        onNavigate={navigateToRoute}
+        onPreloadGallery={preloadGalleryPage}
+        onExport={exportAllData}
+        onImport={triggerImportFile}
+      />
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
