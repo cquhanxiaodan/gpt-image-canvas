@@ -27,6 +27,12 @@ import {
 
 const BASE_URL = import.meta.env.BASE_URL;
 
+function normalizeAssetUrl(url: string): string {
+  if (url.startsWith('http')) return url;
+  if (url.startsWith('/api/')) return `${BASE_URL}${url.slice(1)}`;
+  return `${BASE_URL}${url}`;
+}
+
 interface GalleryPageProps {
   onDeleted: (outputId: string) => void;
   onReuse: (item: GalleryImageItem) => void;
@@ -618,7 +624,7 @@ function GalleryDetailDialog({
               alt={item.prompt}
               className="gallery-modal__image"
               height={item.asset.height}
-              src={item.asset.url}
+              src={normalizeAssetUrl(item.asset.url)}
               width={item.asset.width}
             />
           </div>

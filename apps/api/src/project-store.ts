@@ -255,7 +255,7 @@ function toGeneratedAsset(asset: (typeof assets.$inferSelect) | undefined): Gene
 
   return {
     id: asset.id,
-    url: `api/assets/${asset.id}`,
+    url: `/api/assets/${asset.id}`,
     fileName: asset.fileName,
     mimeType: asset.mimeType,
     width: asset.width,

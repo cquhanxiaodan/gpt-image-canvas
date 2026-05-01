@@ -899,7 +899,8 @@ function getLocalAssetId(asset: TLAsset | undefined, sourceUrl?: string): string
   try {
     const url = new URL(sourceUrl, window.location.origin);
     if (url.origin === window.location.origin) {
-      const match = /^\/api\/assets\/([^/?#]+)(?:\/download)?$/u.exec(url.pathname);
+      const basePath = BASE_URL.replace(/\/$/u, "");
+      const match = new RegExp(`^(?:${basePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})?/api/assets/([^/?#]+)(?:/download)?$`, 'u').exec(url.pathname);
       return match?.[1];
     }
   } catch {
@@ -932,7 +933,7 @@ function resolveCanvasAssetUrl(asset: TLAsset, context: TLAssetContext): string 
 }
 
 function assetPreviewUrl(assetId: string, width: number): string {
-  return `/api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`;
+  return `${BASE_URL}api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`;
 }
 
 function previewWidthForAssetContext(asset: Extract<TLAsset, { type: "image" }>, context: TLAssetContext): AssetPreviewWidth {
@@ -1949,10 +1950,9 @@ export function App() {
       }
 
       // Convert relative asset URLs to absolute URLs for tldraw compatibility
-      const currentBaseUrl = window.location.href;
-      body.record.outputs.forEach((output: { asset?: { url?: string } }) => {
-        if (output.asset?.url && !output.asset.url.startsWith('http')) {
-          output.asset.url = new URL(output.asset.url, currentBaseUrl).href;
+      body.record.outputs.forEach((output: { asset?: { url?: string; id?: string } }) => {
+        if (output.asset?.id && (!output.asset?.url || !output.asset.url.startsWith('http'))) {
+          output.asset.url = `${BASE_URL}api/assets/${output.asset.id}`;
         }
       });
 
@@ -2137,7 +2137,7 @@ export function App() {
       return;
     }
 
-    window.open(`/api/assets/${encodeURIComponent(asset.id)}/download`, "_blank", "noopener,noreferrer");
+    window.open(`${BASE_URL}api/assets/${encodeURIComponent(asset.id)}/download`, "_blank", "noopener,noreferrer");
     setGenerationMessage("已打开原始资源下载。");
   }
 
